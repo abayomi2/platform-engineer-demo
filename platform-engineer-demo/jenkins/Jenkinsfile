@@ -133,7 +133,7 @@ pipeline {
                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" # Update image with exact tag
 
                         sh "kubectl apply -f secret.yaml"
-                        sh "kubectl apply -f deployment.generated.yaml" # Use the modified deployment file
+                        sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
                         sh "kubectl apply -f service.yaml"
                         sh "kubectl apply -f ingress.yaml"
                     }
