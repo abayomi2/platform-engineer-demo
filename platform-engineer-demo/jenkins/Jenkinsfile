@@ -130,7 +130,7 @@ pipeline {
                         // For this demo, let's inject it into the deployment.yaml copy.
                         sh "cp deployment.yaml deployment.generated.yaml"
                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
-                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" # Update image with exact tag
+                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
 
                         sh "kubectl apply -f secret.yaml"
                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
