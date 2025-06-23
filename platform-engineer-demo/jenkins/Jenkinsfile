@@ -130,7 +130,7 @@ pipeline {
                     // 3. Apply Kubernetes manifests
                     echo "Applying Kubernetes manifests to EKS..."
                     dir("${KUBERNETES_DIR}") {
-                        sh "kubectl apply -f secret.yaml" # Apply secret first
+                        sh "kubectl apply -f secret.yaml" // Apply the secret first
                         sh "kubectl apply -f deployment.yaml"
                         sh "kubectl apply -f service.yaml"
                         sh "kubectl apply -f ingress.yaml"
