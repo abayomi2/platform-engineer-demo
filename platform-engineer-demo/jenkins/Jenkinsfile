@@ -1,0 +1,202 @@
+// jenkins/Jenkinsfile
+pipeline {
+    agent any
+
+    environment {
+        // These are passed as parameters to the Jenkins job, then used in the pipeline.
+        EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+        AWS_REGION       = "${params.AWS_REGION}"
+        
+        // Docker Hub credentials retrieved from Jenkins global credentials
+        DOCKERHUB_USERNAME = credentials('dockerhub-credentials').getUsername()
+        DOCKERHUB_PASSWORD = credentials('dockerhub-credentials').getPassword()
+
+        APP_NAME         = "spring-boot-demo-app"
+        APP_REPO_URL     = "${DOCKERHUB_USERNAME}/${APP_NAME}"
+        IMAGE_TAG        = "${env.BUILD_NUMBER}" // Use Jenkins BUILD_NUMBER for unique image tags
+        
+        KUBERNETES_DIR   = "kubernetes" // Path to your Kubernetes manifests within the repo
+        MICROSERVICE_DIR = "microservice/demo" // Path to your Spring Boot project within the repo
+    }
+
+    stages {
+        stage('Checkout Source Code') {
+            steps {
+                script {
+                    echo "Checking out SCM from Git repository..."
+                    checkout scm
+                }
+            }
+        }
+
+        stage('Build Spring Boot App JAR') {
+            steps {
+                script {
+                    echo "Building Spring Boot application JAR with Maven..."
+                    dir("${MICROSERVICE_DIR}") {
+                        // Maven is installed on Jenkins server via user_data script.
+                        // -DskipTests: Skip tests for now to ensure build. You can remove this later if tests are reliable.
+                        sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker image: ${APP_REPO_URL}:${IMAGE_TAG}"
+                    dir("${MICROSERVICE_DIR}") {
+                        // Docker is installed on Jenkins server and user added to docker group via user_data script.
+                        sh "docker build -t ${APP_REPO_URL}:${IMAGE_TAG} ."
+                    }
+                }
+            }
+        }
+
+        stage('Vulnerability Scan with Trivy') {
+            steps {
+                script {
+                    echo "Starting Trivy scan for Docker image: ${APP_REPO_URL}:${IMAGE_TAG}..."
+                    // The trivy_scan.sh script will be copied into Jenkins workspace.
+                    // It handles Trivy installation and execution.
+                    sh """
+                        chmod +x ./jenkins/scripts/trivy_scan.sh
+                        ./jenkins/scripts/trivy_scan.sh ${APP_REPO_URL}:${IMAGE_TAG}
+                    """
+                    // If the trivy_scan.sh script exits with non-zero (due to HIGH/CRITICAL vulns),
+                    // this stage will fail, and the pipeline will stop (due to set -e in script).
+                }
+            }
+        }
+
+        stage('Push Docker Image to Docker Hub') {
+            steps {
+                script {
+                    echo "Logging into Docker Hub and pushing image: ${APP_REPO_URL}:${IMAGE_TAG}..."
+                    // withCredentials block securely exposes Docker Hub username/password as environment variables.
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                        sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+                        sh "docker push ${APP_REPO_URL}:${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                script {
+                    echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
+                    // Jenkins EC2 instance has an IAM role that grants access to AWS Secrets Manager and EKS via aws-auth ConfigMap.
+                    // kubectl and aws CLI are installed on the Jenkins server.
+
+                    // 1. Retrieve DB credentials from AWS Secrets Manager
+                    echo "Retrieving DB credentials from AWS Secrets Manager..."
+                    def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.EKS_CLUSTER_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+                    
+                    // Parse JSON and Base64 encode values for Kubernetes Secret
+                    def jsonSlurper = new groovy.json.JsonSlurper()
+                    def secretData = jsonSlurper.parseText(dbSecretJson)
+
+                    def dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+                    def dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+                    def dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+                    def dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString() // Ensure port is string before encoding
+                    def dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+
+                    // Construct JDBC URL for Spring Boot application (not base64 encoded for DB_URL env variable)
+                    def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+                    def dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+
+                    // 2. Prepare Kubernetes Secret YAML (inject Base64 encoded values)
+                    echo "Preparing Kubernetes Secret YAML..."
+                    sh """
+                        # Copy the template to a working file
+                        cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
+                        
+                        # Use sed to replace placeholders with actual Base64 encoded secret values
+                        # Use '|' as delimiter for sed to avoid issues with '/' in Base64 strings
+                        sed -i "s|\\\${DB_URL_BASE64}|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+
+                        echo "Generated secret.yaml content:"
+                        cat ${KUBERNETES_DIR}/secret.yaml
+                    """
+
+                    // 3. Apply Kubernetes manifests
+                    echo "Applying Kubernetes manifests to EKS..."
+                    dir("${KUBERNETES_DIR}") {
+                        sh "kubectl apply -f secret.yaml" # Apply secret first
+                        sh "kubectl apply -f deployment.yaml"
+                        sh "kubectl apply -f service.yaml"
+                        sh "kubectl apply -f ingress.yaml"
+                    }
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "Verifying deployment readiness..."
+                    // Wait for pods to be ready
+                    sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
+
+                    // Get Ingress ALB DNS name (might take a few minutes for ALB to provision)
+                    def ingress_host = ''
+                    // Retry loop to wait for ALB DNS name to become available
+                    for (int i = 0; i < 10; i++) {
+                        try {
+                            ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+                            if (ingress_host) {
+                                echo "ALB DNS name available: ${ingress_host}"
+                                break
+                            }
+                        } catch (Exception e) {
+                            echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
+                            sleep 10 // Wait 10 seconds before retrying
+                        }
+                    }
+
+                    if (!ingress_host) {
+                        error("ALB DNS name did not become available within timeout.")
+                    }
+
+                    echo "Application health check at: http://${ingress_host}/api/products/health"
+
+                    // Optional: hit the health endpoint to confirm application is healthy
+                    // Use 'curl -f' to fail silently on HTTP errors, '|| { ... }' to fail the pipeline stage
+                    for (int i = 0; i < 5; i++) {
+                        try {
+                            sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
+                            echo "Application health check passed."
+                            break
+                        } catch (Exception e) {
+                            echo "Application health check failed, retrying... (${i + 1}/5)"
+                            sleep 5 // Wait 5 seconds before retrying
+                            if (i == 4) {
+                                error("Application health check failed after multiple retries.")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs() // Clean up workspace after build
+        }
+        failure {
+            echo "Pipeline failed! Check logs for details."
+            // Add notifications here (e.g., email, Slack)
+        }
+        success {
+            echo "Pipeline succeeded! Application deployed and verified."
+        }
+    }
+}
