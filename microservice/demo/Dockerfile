@@ -1,6 +1,6 @@
 # microservice/Dockerfile
 # Use a JRE base image for smaller size
-FROM openjdk:17-slim-bookworm
+FROM openjdk:17-slim-bullseye 
 # Set the working directory
 WORKDIR /app
 
