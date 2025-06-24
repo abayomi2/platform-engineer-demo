@@ -16,8 +16,6 @@ pipeline {
         KUBERNETES_DIR   = "kubernetes"
         MICROSERVICE_DIR = "microservice/demo"
 
-        // NEW: Add PROJECT_NAME environment variable.
-        // This value MUST match the 'project_name' variable default/value in your Terraform.
         PROJECT_NAME = "platform-engineer-eks-demo" 
     }
 
@@ -47,8 +45,6 @@ pipeline {
                 script {
                     echo "Building Docker image for tag: ${IMAGE_TAG}"
                     dir("${MICROSERVICE_DIR}") {
-                        // The actual image name with Docker Hub username will be fully formed in the push stage.
-                        // For now, build with a generic name that can be re-tagged or used in Push.
                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
                     }
                 }
@@ -90,16 +86,19 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                script {
+                script { // This outer script block is fine.
                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
                     echo "Retrieving DB credentials from AWS Secrets Manager..."
                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
                     
+                    // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
+                    // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
                     def jsonSlurper = new groovy.json.JsonSlurper()
-                    def secretData = jsonSlurper.parseText(dbSecretJson)
+                    def secretData = jsonSlurper.parseText(dbSecretJson) // Parse immediately after slurper creation
 
+                    // Now, extract and encode all values
                     def dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
                     def dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
                     def dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
@@ -110,6 +109,7 @@ pipeline {
                     def dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
 
                     echo "Preparing Kubernetes Secret YAML..."
+                    // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
                     sh """
                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
@@ -201,15 +201,11 @@ pipeline {
 
 
 
-
 // // jenkins/Jenkinsfile
 // pipeline {
 //     agent any
 
-//     // CRITICAL: Add the tools directive here to make Jenkins-managed Maven available
 //     tools {
-//         // The string 'Maven3.9.10' must match exactly the Name you configured in
-//         // Jenkins UI -> Manage Jenkins -> Tools -> Maven installations.
 //         maven 'Maven3.9.10' 
 //     }
 
@@ -218,18 +214,14 @@ pipeline {
 //         AWS_REGION       = "${params.AWS_REGION}"
         
 //         APP_NAME         = "spring-boot-demo-app"
-        
-//         // Remove direct credentials call here.
-//         // APP_REPO_URL will be constructed later within the Push stage after credentials are bound.
-//         // Or, we use a default if it's always the same Docker Hub user for the repo name
-//         // For simplicity, let's assume APP_REPO_URL doesn't need the username *before* the push stage
-//         // Or, we can set it to a dummy value here and fix it in the push stage.
-//         // Let's defer APP_REPO_URL definition to the push stage or use a fixed one if user's Dockerhub is always same
-        
 //         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
         
 //         KUBERNETES_DIR   = "kubernetes"
 //         MICROSERVICE_DIR = "microservice/demo"
+
+//         // NEW: Add PROJECT_NAME environment variable.
+//         // This value MUST match the 'project_name' variable default/value in your Terraform.
+//         PROJECT_NAME = "platform-engineer-eks-demo" 
 //     }
 
 //     stages {
@@ -247,7 +239,6 @@ pipeline {
 //                 script {
 //                     echo "Building Spring Boot application JAR with Maven..."
 //                     dir("${MICROSERVICE_DIR}") {
-//                         // Maven will now be in PATH via the 'tools' directive for this step.
 //                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
 //                     }
 //                 }
@@ -306,7 +297,8 @@ pipeline {
 //                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
 //                     echo "Retrieving DB credentials from AWS Secrets Manager..."
-//                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.EKS_CLUSTER_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+//                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
+//                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
                     
 //                     def jsonSlurper = new groovy.json.JsonSlurper()
 //                     def secretData = jsonSlurper.parseText(dbSecretJson)
@@ -409,3 +401,6 @@ pipeline {
 //         }
 //     }
 // }
+
+
+
