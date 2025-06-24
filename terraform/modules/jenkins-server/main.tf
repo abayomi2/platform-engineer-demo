@@ -14,6 +14,7 @@ resource "aws_instance" "jenkins_server" {
   EKS_CLUSTER_NAME = var.eks_cluster_name
   AWS_REGION       = var.aws_region
   JAVA_HOME        = "/usr/lib/jvm/java-17-amazon-corretto" # Or the correct path for Corretto 17
+
 })
 user_data_replace_on_change = true
 

@@ -2,6 +2,13 @@
 pipeline {
     agent any
 
+    // CRITICAL: Add the tools directive here to make Jenkins-managed Maven available
+    tools {
+        // The string 'Maven3.9.10' must match exactly the Name you configured in
+        // Jenkins UI -> Manage Jenkins -> Tools -> Maven installations.
+        maven 'Maven3.9.10' 
+    }
+
     environment {
         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
         AWS_REGION       = "${params.AWS_REGION}"
@@ -36,6 +43,7 @@ pipeline {
                 script {
                     echo "Building Spring Boot application JAR with Maven..."
                     dir("${MICROSERVICE_DIR}") {
+                        // Maven will now be in PATH via the 'tools' directive for this step.
                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
                     }
                 }
