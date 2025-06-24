@@ -33,3 +33,9 @@ output "kubeconfig_command" {
   description = "Command to update your kubeconfig for EKS."
   value       = "aws eks update-kubeconfig --name ${module.eks_cluster.cluster_name} --region ${var.aws_region}"
 }
+output "alb_controller_policy_arn" {
+  description = "ARN of the IAM Policy for the AWS Load Balancer Controller."
+  value       = module.eks_cluster.alb_controller_policy_arn
+}
+
+

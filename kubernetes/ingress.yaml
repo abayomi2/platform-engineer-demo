@@ -1,0 +1,26 @@
+# kubernetes/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: spring-boot-app-ingress
+  annotations:
+    kubernetes.io/ingress.class: alb # Specify AWS ALB Ingress Controller
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip # Required for Fargate or when pods have direct IPs
+    alb.ingress.kubernetes.io/group.name: platform-engineer-eks-demo-alb-group # Group multiple ingresses under one ALB (optional but good)
+    alb.ingress.kubernetes.io/healthcheck-path: /api/products/health # Health check for ALB
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]' # Only HTTP for now, can add HTTPS later
+  labels:
+    app: spring-boot-app
+spec:
+  rules:
+  - http:
+      paths:
+      - path: / # Route all traffic to your service
+        pathType: Prefix
+        backend:
+          service:
+            name: spring-boot-app-service
+            port:
+              number: 80

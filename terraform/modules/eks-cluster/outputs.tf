@@ -21,3 +21,8 @@ output "node_group_role_arn" {
   description = "The ARN of the IAM role used by the EKS node group."
   value       = aws_iam_role.eks_node_role.arn
 }
+
+output "alb_controller_policy_arn" {
+  description = "ARN of the IAM Policy for the AWS Load Balancer Controller."
+  value       = aws_iam_policy.alb_controller_policy.arn
+}

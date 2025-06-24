@@ -1,0 +1,65 @@
+# kubernetes/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-boot-app-deployment
+  labels:
+    app: spring-boot-app
+spec:
+  replicas: 2 # Start with 2 replicas for high availability
+  selector:
+    matchLabels:
+      app: spring-boot-app
+  template:
+    metadata:
+      labels:
+        app: spring-boot-app
+    spec:
+      containers:
+      - name: spring-boot-app-container
+        # Image will be dynamically replaced by Jenkins Pipeline 'sed' command.
+        # The sed command in Jenkinsfile expects 'image: spring-boot-demo-app:latest' as a placeholder.
+        image: spring-boot-demo-app:latest # This will be replaced by the pipeline with your Docker Hub username and image tag
+        ports:
+        - containerPort: 8080 # Spring Boot default port
+        env:
+          # Environment variables for DB connection, populated from Kubernetes Secret
+          - name: DB_URL
+            valueFrom:
+              secretKeyRef:
+                name: db-credentials
+                key: db_url
+          - name: DB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: db-credentials
+                key: db_username
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-credentials
+                key: db_password
+        resources: # Define resource requests and limits for good practice
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        # Health check for readiness and liveness
+        livenessProbe:
+          httpGet:
+            path: /api/products/health # Your health check endpoint
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/products/health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 1

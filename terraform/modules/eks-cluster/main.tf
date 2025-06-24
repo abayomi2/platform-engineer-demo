@@ -34,6 +34,17 @@ resource "aws_iam_role" "eks_cluster_role" {
   })
 }
 
+# NEW: IAM Policy for AWS Load Balancer Controller
+resource "aws_iam_policy" "alb_controller_policy" {
+  name        = "AWSLoadBalancerControllerIAMPolicy"
+  policy      = file("${path.module}/iam_policy.json") # Reference the JSON file
+  description = "IAM Policy for AWS Load Balancer Controller"
+  tags = {
+    Name = "${var.project_name}-alb-controller-policy"
+  }
+}
+
+
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
   role       = aws_iam_role.eks_cluster_role.name

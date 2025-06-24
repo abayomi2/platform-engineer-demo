@@ -17,6 +17,9 @@ pipeline {
         MICROSERVICE_DIR = "microservice/demo"
 
         PROJECT_NAME = "platform-engineer-eks-demo" 
+
+        // NEW: Add ALB_CONTROLLER_POLICY_ARN to environment, sourced from Jenkins job parameter.
+        ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
     }
 
     stages {
@@ -112,7 +115,6 @@ pipeline {
 
                     // Now, use the serialized 'secretValues' map for shell commands.
                     echo "Preparing Kubernetes Secret YAML..."
-                    // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
                     sh """
                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
@@ -136,10 +138,19 @@ pipeline {
                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
 
+                        // Prepare and apply aws-load-balancer-controller-service-account.yaml
+                        // Replace <ALB_CONTROLLER_POLICY_ARN> placeholder with the actual ARN from Jenkins job parameter.
+                        sh """
+                            cp aws-load-balancer-controller-service-account.yaml aws-load-balancer-controller-service-account.generated.yaml
+                            sed -i "s|<ALB_CONTROLLER_POLICY_ARN>|${ALB_CONTROLLER_POLICY_ARN}|g" aws-load-balancer-controller-service-account.generated.yaml
+                            # If <YOUR_AWS_ACCOUNT_ID> is also a placeholder in the YAML, inject it here too.
+                            # e.g., sed -i "s|<YOUR_AWS_ACCOUNT_ID>|${params.AWS_ACCOUNT_ID}|g" aws-load-balancer-controller-service-account.generated.yaml
+                        """
                         sh "kubectl apply -f secret.yaml"
                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
                         sh "kubectl apply -f service.yaml"
                         sh "kubectl apply -f ingress.yaml"
+                        sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" // Apply this generated ServiceAccount
                     }
                 }
             }
@@ -204,6 +215,7 @@ pipeline {
 
 
 
+
 // // jenkins/Jenkinsfile
 // pipeline {
 //     agent any
@@ -222,8 +234,6 @@ pipeline {
 //         KUBERNETES_DIR   = "kubernetes"
 //         MICROSERVICE_DIR = "microservice/demo"
 
-//         // NEW: Add PROJECT_NAME environment variable.
-//         // This value MUST match the 'project_name' variable default/value in your Terraform.
 //         PROJECT_NAME = "platform-engineer-eks-demo" 
 //     }
 
@@ -253,8 +263,6 @@ pipeline {
 //                 script {
 //                     echo "Building Docker image for tag: ${IMAGE_TAG}"
 //                     dir("${MICROSERVICE_DIR}") {
-//                         // The actual image name with Docker Hub username will be fully formed in the push stage.
-//                         // For now, build with a generic name that can be re-tagged or used in Push.
 //                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
 //                     }
 //                 }
@@ -296,35 +304,42 @@ pipeline {
 
 //         stage('Deploy to EKS') {
 //             steps {
-//                 script {
+//                 script { // This outer script block is fine.
 //                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
 //                     echo "Retrieving DB credentials from AWS Secrets Manager..."
 //                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
 //                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
                     
-//                     def jsonSlurper = new groovy.json.JsonSlurper()
-//                     def secretData = jsonSlurper.parseText(dbSecretJson)
+//                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
+//                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
+//                     def secretValues = [:] // Use a map to hold the results
+//                     script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
+//                         def jsonSlurper = new groovy.json.JsonSlurper()
+//                         def secretData = jsonSlurper.parseText(dbSecretJson)
 
-//                     def dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
-//                     def dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
-//                     def dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
-//                     def dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
-//                     def dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+//                         secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+//                         secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+//                         secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+//                         secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
+//                         secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
 
-//                     def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
-//                     def dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+//                         def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+//                         secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+//                     } // <--- END INNER SCRIPT BLOCK
 
+//                     // Now, use the serialized 'secretValues' map for shell commands.
 //                     echo "Preparing Kubernetes Secret YAML..."
+//                     // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
 //                     sh """
 //                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-//                         sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 
 //                         echo "Generated secret.yaml content:"
 //                         cat ${KUBERNETES_DIR}/secret.yaml
@@ -404,6 +419,4 @@ pipeline {
 //         }
 //     }
 // }
-
-
 

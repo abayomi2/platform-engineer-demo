@@ -1,0 +1,15 @@
+# kubernetes/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-boot-app-service
+  labels:
+    app: spring-boot-app
+spec:
+  selector:
+    app: spring-boot-app
+  ports:
+    - protocol: TCP
+      port: 80 # Service port (e.g., how Ingress talks to it)
+      targetPort: 8080 # Container port (Spring Boot's port)
+  type: ClusterIP # Internal to the cluster, Ingress will expose it externally
