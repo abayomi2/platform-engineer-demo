@@ -38,4 +38,7 @@ output "alb_controller_policy_arn" {
   value       = module.eks_cluster.alb_controller_policy_arn
 }
 
-
+output "node_group_role_arn" {
+  description = "The ARN of the IAM role used by the EKS node group."
+  value       = module.eks_cluster.node_group_role_arn
+}

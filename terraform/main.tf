@@ -1,3 +1,4 @@
+
 # This Terraform configuration sets up a complete AWS infrastructure for a platform engineering demo.
 # terraform/main.tf
 
@@ -184,6 +185,8 @@ resource "aws_secretsmanager_secret" "db_credentials" {
   tags = {
     Name = "${var.project_name}-db-secrets"
   }
+  # CRITICAL: Force immediate deletion for development/test environments
+  recovery_window_in_days = 0 # Set to 0 to bypass the 30-day recovery window for clean re-creation
 }
 
 resource "aws_secretsmanager_secret_version" "db_credentials_version" {
@@ -233,3 +236,81 @@ resource "null_resource" "kubeconfig_update" {
   depends_on = [module.eks_cluster] # Run after EKS is ready
 }
 
+# # Add ingress rule to RDS SG from EKS Node SG
+# resource "aws_security_group_rule" "eks_to_rds" {
+#   type                     = "ingress"
+#   from_port                = 5432
+#   to_port                  = 5432
+#   protocol                 = "tcp"
+#   source_security_group_id = module.eks_cluster.eks_node_group_sg_id # Use the output from the EKS module
+#   security_group_id        = aws_security_group.rds_sg.id
+#   description              = "Allow EKS nodes to connect to RDS"
+#   depends_on = [module.eks_cluster]
+# }
+
+# NEW: null_resource to wait for EKS cluster to be truly active before deploying Kubernetes resources
+resource "null_resource" "eks_cluster_active_wait" {
+  depends_on = [
+    module.eks_cluster # Depend on the entire EKS module completion
+  ]
+  provisioner "local-exec" {
+    command = "echo 'Terraform is waiting for EKS cluster to be fully active before deploying Kubernetes resources...'"
+  }
+}
+
+# NEW: 7. Configure EKS aws-auth ConfigMap by directly executing kubectl apply
+# This method is more robust for race conditions during cluster bring-up.
+resource "null_resource" "aws_auth_configmap_deployment" {
+  depends_on = [
+    null_resource.eks_cluster_active_wait, # Ensure EKS cluster is fully active
+    module.jenkins_server,                 # Ensure Jenkins IAM role is created
+    module.eks_cluster.node_group_role_arn # Ensure node role ARN is computable
+  ]
+
+  provisioner "local-exec" {
+    command = <<EOF
+      set -euo pipefail # Robust shell settings for the local-exec script
+
+      # Assign Terraform interpolated values to shell variables
+      # NOTE: These are interpolated by Terraform first, so they are correct as $${...}
+      JENKINS_ROLE_ARN="${module.jenkins_server.jenkins_role_arn}"
+      NODE_ROLE_ARN="${module.eks_cluster.node_group_role_arn}"
+      CLUSTER_NAME="${module.eks_cluster.cluster_name}"
+      AWS_REGION="${var.aws_region}"
+
+      echo "Applying aws-auth ConfigMap for cluster $${CLUSTER_NAME} in region $${AWS_REGION}..."
+
+      # Create a temporary aws-auth.yaml file with correct ARNs
+      cat <<'EKS_AUTH_YAML_CONTENT' > "/tmp/aws-auth-$${CLUSTER_NAME}.yaml"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: $${NODE_ROLE_ARN}
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+    - rolearn: $${JENKINS_ROLE_ARN}
+      username: jenkins
+      groups:
+        - system:masters
+    # NEW: Add the underlying Jenkins EC2 instance role for direct access
+    - rolearn: $${JENKINS_ROLE_ARN} # Use the same role ARN for ec2-user's instance profile
+      username: ec2-user-jenkins-instance # A distinct username for this role mapping
+      groups:
+        - system:masters
+EKS_AUTH_YAML_CONTENT
+
+      # Apply the aws-auth ConfigMap to the EKS cluster
+      # KUBECONFIG="" to ensure kubectl relies solely on provided auth (not local kubeconfig)
+      KUBECONFIG="" kubectl apply -f "/tmp/aws-auth-$${CLUSTER_NAME}.yaml" || { echo "ERROR: kubectl apply for aws-auth failed."; exit 1; }
+
+      echo "aws-auth ConfigMap applied for cluster $${CLUSTER_NAME} successfully."
+    EOF
+    interpreter = ["bash", "-c"] # Execute the heredoc content as a bash script
+  }
+}

@@ -5,14 +5,35 @@ metadata:
   name: aws-auth
   namespace: kube-system
 data:
-  # mapRoles section defines which IAM roles can access the cluster
   mapRoles: |
-    - rolearn: arn:aws:iam::905418222266:role/platform-engineer-eks-demo-jenkins-role # <YOUR_JENKINS_IAM_ROLE_ARN>         
+    # EKS worker node role mapping (crucial for nodes to join cluster)
+    - rolearn: arn:aws:iam::905418222266:role/platform-engineer-eks-demo-eks-node-role 
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+    # Jenkins IAM role mapping to grant admin access
+    - rolearn: arn:aws:iam::905418222266:role/platform-engineer-eks-demo-jenkins-role 
       username: jenkins
       groups:
-        - system:masters # Grants administrative access to the cluster for this role
-  # Note: If you already had other roles (e.g., node roles) in mapRoles,
-  # this simple 'apply' will overwrite the entire mapRoles section.
-  # For a production setup, you'd typically use `kubectl edit` or a strategic merge patch.
-  # For this demo, assuming only default node roles were there or you're starting clean,
-  # this is acceptable. The EKS worker nodes get their access via a different mechanism.
+        - system:masters
+
+
+# # kubernetes/jenkins-eks-access.yaml
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: aws-auth
+#   namespace: kube-system
+# data:
+#   # mapRoles section defines which IAM roles can access the cluster
+#   mapRoles: |
+#     - rolearn: arn:aws:iam::905418222266:role/platform-engineer-eks-demo-jenkins-role # <YOUR_JENKINS_IAM_ROLE_ARN>         
+#       username: jenkins
+#       groups:
+#         - system:masters # Grants administrative access to the cluster for this role
+#   # Note: If you already had other roles (e.g., node roles) in mapRoles,
+#   # this simple 'apply' will overwrite the entire mapRoles section.
+#   # For a production setup, you'd typically use `kubectl edit` or a strategic merge patch.
+#   # For this demo, assuming only default node roles were there or you're starting clean,
+#   # this is acceptable. The EKS worker nodes get their access via a different mechanism.
