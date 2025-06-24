@@ -2,10 +2,7 @@
 pipeline {
     agent any
 
-    // CRITICAL: Add the tools directive here to make Jenkins-managed Maven available
     tools {
-        // The string 'Maven3.9.10' must match exactly the Name you configured in
-        // Jenkins UI -> Manage Jenkins -> Tools -> Maven installations.
         maven 'Maven3.9.10' 
     }
 
@@ -14,18 +11,14 @@ pipeline {
         AWS_REGION       = "${params.AWS_REGION}"
         
         APP_NAME         = "spring-boot-demo-app"
-        
-        // Remove direct credentials call here.
-        // APP_REPO_URL will be constructed later within the Push stage after credentials are bound.
-        // Or, we use a default if it's always the same Docker Hub user for the repo name
-        // For simplicity, let's assume APP_REPO_URL doesn't need the username *before* the push stage
-        // Or, we can set it to a dummy value here and fix it in the push stage.
-        // Let's defer APP_REPO_URL definition to the push stage or use a fixed one if user's Dockerhub is always same
-        
         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
         
         KUBERNETES_DIR   = "kubernetes"
         MICROSERVICE_DIR = "microservice/demo"
+
+        // NEW: Add PROJECT_NAME environment variable.
+        // This value MUST match the 'project_name' variable default/value in your Terraform.
+        PROJECT_NAME = "platform-engineer-eks-demo" 
     }
 
     stages {
@@ -43,7 +36,6 @@ pipeline {
                 script {
                     echo "Building Spring Boot application JAR with Maven..."
                     dir("${MICROSERVICE_DIR}") {
-                        // Maven will now be in PATH via the 'tools' directive for this step.
                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
                     }
                 }
@@ -102,7 +94,8 @@ pipeline {
                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
                     echo "Retrieving DB credentials from AWS Secrets Manager..."
-                    def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.EKS_CLUSTER_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+                    // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
+                    def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
                     
                     def jsonSlurper = new groovy.json.JsonSlurper()
                     def secretData = jsonSlurper.parseText(dbSecretJson)
@@ -205,3 +198,214 @@ pipeline {
         }
     }
 }
+
+
+
+
+// // jenkins/Jenkinsfile
+// pipeline {
+//     agent any
+
+//     // CRITICAL: Add the tools directive here to make Jenkins-managed Maven available
+//     tools {
+//         // The string 'Maven3.9.10' must match exactly the Name you configured in
+//         // Jenkins UI -> Manage Jenkins -> Tools -> Maven installations.
+//         maven 'Maven3.9.10' 
+//     }
+
+//     environment {
+//         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+//         AWS_REGION       = "${params.AWS_REGION}"
+        
+//         APP_NAME         = "spring-boot-demo-app"
+        
+//         // Remove direct credentials call here.
+//         // APP_REPO_URL will be constructed later within the Push stage after credentials are bound.
+//         // Or, we use a default if it's always the same Docker Hub user for the repo name
+//         // For simplicity, let's assume APP_REPO_URL doesn't need the username *before* the push stage
+//         // Or, we can set it to a dummy value here and fix it in the push stage.
+//         // Let's defer APP_REPO_URL definition to the push stage or use a fixed one if user's Dockerhub is always same
+        
+//         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
+        
+//         KUBERNETES_DIR   = "kubernetes"
+//         MICROSERVICE_DIR = "microservice/demo"
+//     }
+
+//     stages {
+//         stage('Checkout Source Code') {
+//             steps {
+//                 script {
+//                     echo "Checking out SCM from Git repository..."
+//                     checkout scm
+//                 }
+//             }
+//         }
+
+//         stage('Build Spring Boot App JAR') {
+//             steps {
+//                 script {
+//                     echo "Building Spring Boot application JAR with Maven..."
+//                     dir("${MICROSERVICE_DIR}") {
+//                         // Maven will now be in PATH via the 'tools' directive for this step.
+//                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Build Docker Image') {
+//             steps {
+//                 script {
+//                     echo "Building Docker image for tag: ${IMAGE_TAG}"
+//                     dir("${MICROSERVICE_DIR}") {
+//                         // The actual image name with Docker Hub username will be fully formed in the push stage.
+//                         // For now, build with a generic name that can be re-tagged or used in Push.
+//                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Vulnerability Scan with Trivy') {
+//             steps {
+//                 script {
+//                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
+//                     sh """
+//                         chmod +x ./jenkins/scripts/trivy_scan.sh
+//                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
+//                     """
+//                 }
+//             }
+//         }
+
+//         stage('Push Docker Image to Docker Hub') {
+//             steps {
+//                 script {
+//                     // Expose credentials as DOCKER_USERNAME and DOCKER_PASSWORD environment variables
+//                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+//                         // Now DOCKER_USERNAME is directly available as an environment variable
+//                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
+//                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+
+//                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+//                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+                        
+//                         // Retag the image if necessary, or push directly.
+//                         // If you built with generic name, retag before pushing.
+//                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
+//                         sh "docker push ${fullImageTag}"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Deploy to EKS') {
+//             steps {
+//                 script {
+//                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
+
+//                     echo "Retrieving DB credentials from AWS Secrets Manager..."
+//                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.EKS_CLUSTER_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+                    
+//                     def jsonSlurper = new groovy.json.JsonSlurper()
+//                     def secretData = jsonSlurper.parseText(dbSecretJson)
+
+//                     def dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+//                     def dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+//                     def dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+//                     def dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
+//                     def dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+
+//                     def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+//                     def dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+
+//                     echo "Preparing Kubernetes Secret YAML..."
+//                     sh """
+//                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
+                        
+//                         sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+
+//                         echo "Generated secret.yaml content:"
+//                         cat ${KUBERNETES_DIR}/secret.yaml
+//                     """
+
+//                     echo "Applying Kubernetes manifests to EKS..."
+//                     dir("${KUBERNETES_DIR}") {
+//                         // The Docker image name in deployment.yaml needs to be updated with the specific tag.
+//                         // For a real production scenario, you would typically use `kubectl set image` or Helm.
+//                         // For this demo, let's inject it into the deployment.yaml copy.
+//                         sh "cp deployment.yaml deployment.generated.yaml"
+//                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
+//                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
+
+//                         sh "kubectl apply -f secret.yaml"
+//                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
+//                         sh "kubectl apply -f service.yaml"
+//                         sh "kubectl apply -f ingress.yaml"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Verify Deployment') {
+//             steps {
+//                 script {
+//                     echo "Verifying deployment readiness..."
+//                     sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
+
+//                     def ingress_host = ''
+//                     for (int i = 0; i < 10; i++) {
+//                         try {
+//                             ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+//                             if (ingress_host) {
+//                                 echo "ALB DNS name available: ${ingress_host}"
+//                                 break
+//                             }
+//                         } catch (Exception e) {
+//                             echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
+//                             sleep 10
+//                         }
+//                     }
+
+//                     if (!ingress_host) {
+//                         error("ALB DNS name did not become available within timeout.")
+//                     }
+
+//                     echo "Application health check at: http://${ingress_host}/api/products/health"
+
+//                     for (int i = 0; i < 5; i++) {
+//                         try {
+//                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
+//                             echo "Application health check passed."
+//                             break
+//                         } catch (Exception e) {
+//                             echo "Application health check failed, retrying... (${i + 1}/5)"
+//                             sleep 5
+//                             if (i == 4) {
+//                                 error("Application health check failed after multiple retries.")
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     post {
+//         always {
+//             cleanWs() // Should now work as agent any is at top level
+//             echo "Post-build actions always run."
+//         }
+//         failure {
+//             echo "Pipeline failed! Check logs for details."
+//         }
+//         success {
+//             echo "Pipeline succeeded! Application deployed and verified."
+//         }
+//     }
+// }
