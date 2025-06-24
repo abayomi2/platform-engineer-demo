@@ -89,27 +89,22 @@ pipeline {
 
                     echo "Retrieving DB credentials from AWS Secrets Manager and preparing for Kubernetes Secret..."
                     
-                    // Retrieve the full secret JSON string once
                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
 
-                    // CRITICAL FIX: Extract and Base64 encode *each value separately* using 'jq -r' and then 'base64 -w 0'
-                    // -w 0 prevents line wrapping, ensuring single-line Base64 output.
-                    def dbUsernameBase64 = sh(script: "echo -n '${secretJsonString}' | jq -r '.username' | base64 -w 0", returnStdout: true).trim()
-                    def dbPasswordBase64 = sh(script: "echo -n '${secretJsonString}' | jq -r '.password' | base64 -w 0", returnStdout: true).trim()
-                    def dbHostBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.host' | base64 -w 0", returnStdout: true).trim()
-                    def dbPortBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.port | tostring | @base64'", returnStdout: true).trim() // Corrected jq usage with @base64
-
-                    //def dbPortBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.port' | tostring | base64 -w 0", returnStdout: true).trim()
-                    def dbNameBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.dbname' | base64 -w 0", returnStdout: true).trim()
+                    // CRITICAL FIX: Add 'tr -d '\n'' after base64 -w 0 to strip any lingering newlines.
+                    def dbUsernameBase64 = sh(script: "echo -n '${secretJsonString}' | jq -r '.username' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+                    def dbPasswordBase64 = sh(script: "echo -n '${secretJsonString}' | jq -r '.password' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+                    def dbHostBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.host' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+                    def dbPortBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.port | tostring' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim() # Ensured tostring is part of jq filter and newline removed
+                    def dbNameBase64     = sh(script: "echo -n '${secretJsonString}' | jq -r '.dbname' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
 
                     // Reconstruct dbUrl and then base64 encode it, ensuring no extra spaces or newlines
                     def dbHost = sh(script: "echo -n '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
-                    def dbPort = sh(script: "echo -n '${secretJsonString}' | jq -r '.port'", returnStdout: true).trim() // Removed tostring as shell command
-                    //def dbPort = sh(script: "echo -n '${secretJsonString}' | jq -r '.port' | tostring", returnStdout: true).trim()
+                    def dbPort = sh(script: "echo -n '${secretJsonString}' | jq -r '.port | tostring'", returnStdout: true).trim() # Ensured tostring is part of jq filter
                     def dbName = sh(script: "echo -n '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
                     
                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
-                    def dbUrlBase64 = sh(script: "echo -n '${dbJdbcUrl}' | base64 -w 0", returnStdout: true).trim()
+                    def dbUrlBase64 = sh(script: "echo -n '${dbJdbcUrl}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
 
                     echo "Preparing Kubernetes Secret YAML..."
                     sh """
@@ -198,8 +193,6 @@ pipeline {
         }
     }
 }
-
-
 
 
 
