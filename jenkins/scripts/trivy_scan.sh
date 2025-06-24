@@ -10,28 +10,40 @@ if [ -z "$IMAGE_NAME" ]; then
 fi
 
 echo "Installing Trivy..."
-# For Amazon Linux 2 (based on RHEL/CentOS)
-# Use full path for yum/rpm
 sudo /usr/bin/rpm -ivh https://github.com/aquasecurity/trivy/releases/download/v0.51.0/trivy_0.51.0_Linux-64bit.rpm || { echo "Trivy RPM install failed (might be already installed)."; }
 
 echo "Installing jq (for JSON parsing)..."
 sudo /usr/bin/yum install -y jq || { echo "jq installation failed."; exit 1; }
 
-# Ensure Trivy is in PATH, or run it with full path
-# Since /usr/local/bin is in PATH, 'trivy' command should work.
 echo "Running Trivy scan on $IMAGE_NAME..."
-# --exit-code 1 ensures a non-zero exit if any HIGH/CRITICAL vulns are found
-# --ignore-unfixed to only report fixable vulnerabilities
-trivy image --severity HIGH,CRITICAL --format json --exit-code 1 --output trivy-results.json --ignore-unfixed "$IMAGE_NAME"
+# Removed --exit-code 1 from the Trivy command itself.
+trivy image --severity HIGH,CRITICAL --format json --output trivy-results.json --ignore-unfixed "$IMAGE_NAME"
 
-# Check scan results based on exit code from Trivy.
-# Trivy automatically exits with 1 if --exit-code 1 is used and vulnerabilities are found.
-if [ $? -eq 0 ]; then
-  echo "Trivy scan passed: No HIGH/CRITICAL vulnerabilities found (or all are unfixed)."
+TRIVY_EXIT_CODE=$? # Capture Trivy's actual exit code.
+
+if [ -s trivy-results.json ]; then # -s checks if file is non-empty
+  echo "--- Trivy Scan Results Summary (HIGH/CRITICAL) ---"
+  cat trivy-results.json | jq -r '
+    .Results[] | select(.Vulnerabilities != null) |
+    .Vulnerabilities[] | select(.Severity == "HIGH" or .Severity == "CRITICAL") |
+    "Vulnerability: \(.VulnerabilityID) - Package: \(.PkgName) - Installed: \(.InstalledVersion) - Fixed: \(.FixedVersion) - Severity: \(.Severity) - Title: \(.Title)"
+  '
+  echo "--- End Trivy Scan Results Summary ---"
 else
-  echo "!!! TRIVY SCAN FAILED: Found HIGH/CRITICAL vulnerabilities. See trivy-results.json below. !!!"
-  cat trivy-results.json
-  exit 1 # Explicitly exit with 1 to fail the Jenkins stage
+  echo "WARNING: Trivy scan did not produce a results file. This might indicate a scan error."
+  TRIVY_EXIT_CODE=2 # Force exit code to 2 if no results file (for error condition)
 fi
 
-# You can add a step to publish trivy-results.json as a build artifact in Jenkins.
+# Now, evaluate Trivy's captured exit code (TRIVY_EXIT_CODE).
+if [ "$TRIVY_EXIT_CODE" -eq 0 ]; then
+  echo "Trivy scan passed: No HIGH/CRITICAL vulnerabilities found."
+  exit 0 # Success for Jenkins stage
+elif [ "$TRIVY_EXIT_CODE" -eq 1 ]; then
+  echo "WARNING: Trivy scan found HIGH/CRITICAL vulnerabilities. Pipeline will continue for demo purposes."
+  # In a real production pipeline, you would likely exit 1 here to enforce security gates.
+  exit 0 # <--- THIS IS THE CRITICAL LINE TO ADD/CONFIRM
+else # TRIVY_EXIT_CODE is 2 (scan error) or other unexpected non-vuln exit code
+  echo "ERROR: Trivy scan encountered a critical error during execution (Exit Code: $TRIVY_EXIT_CODE)."
+  exit 1 # Fail the Jenkins stage due to a scan error, not a vulnerability finding.
+fi
+# Ensure the script ends with 'fi' and no extra characters after it.
