@@ -95,30 +95,33 @@ pipeline {
                     
                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
-                    def jsonSlurper = new groovy.json.JsonSlurper()
-                    def secretData = jsonSlurper.parseText(dbSecretJson) // Parse immediately after slurper creation
+                    def secretValues = [:] // Use a map to hold the results
+                    script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
+                        def jsonSlurper = new groovy.json.JsonSlurper()
+                        def secretData = jsonSlurper.parseText(dbSecretJson)
 
-                    // Now, extract and encode all values
-                    def dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
-                    def dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
-                    def dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
-                    def dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
-                    def dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+                        secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+                        secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+                        secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+                        secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
+                        secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
 
-                    def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
-                    def dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+                        def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+                        secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+                    } // <--- END INNER SCRIPT BLOCK
 
+                    // Now, use the serialized 'secretValues' map for shell commands.
                     echo "Preparing Kubernetes Secret YAML..."
                     // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
                     sh """
                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-                        sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 
                         echo "Generated secret.yaml content:"
                         cat ${KUBERNETES_DIR}/secret.yaml
