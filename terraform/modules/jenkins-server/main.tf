@@ -6,7 +6,11 @@ resource "aws_instance" "jenkins_server" {
   vpc_security_group_ids = [aws_security_group.jenkins_sg.id]
   key_name      = "prod-kp" # <--- IMPORTANT: REPLACE WITH YOUR SSH KEY PAIR NAME
   associate_public_ip_address = true # Jenkins will be accessible via public IP
-
+  root_block_device {
+    volume_size = 30 # NEW: Increased size to 30 GiB
+    volume_type = "gp2" # Keep as gp2, or change to gp3 for better performance/cost if desired
+    delete_on_termination = true # Explicitly set to true for clean destroy
+  }
   # IAM Instance Profile for Jenkins to access AWS services (ECR, EKS, Secrets Manager)
   iam_instance_profile = aws_iam_instance_profile.jenkins_profile.name
 
