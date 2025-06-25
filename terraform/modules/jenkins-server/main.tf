@@ -37,7 +37,7 @@ resource "aws_security_group" "jenkins_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["1.158.17.99/32"] # <--- IMPORTANT: RESTRICT THIS TO YOUR IP(I am using my local PC IP as an example)
+    cidr_blocks = ["0.0.0.0/0"] # <--- IMPORTANT: RESTRICT THIS TO YOUR IP(I am using my local PC IP as an example)
     description = "Allow SSH from specific IP"
   }
 
