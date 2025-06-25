@@ -1,23 +1,21 @@
-// jenkins/Jenkinsfile
 pipeline {
     agent any
 
     tools {
-        maven 'Maven3.9.10' 
+        maven 'Maven3.9.10'
     }
 
     environment {
         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
         AWS_REGION       = "${params.AWS_REGION}"
-        
+
         APP_NAME         = "spring-boot-demo-app"
-        IMAGE_TAG        = "${env.BUILD_NUMBER}" 
-        
+        IMAGE_TAG        = "${env.BUILD_NUMBER}"
+
         KUBERNETES_DIR   = "kubernetes"
         MICROSERVICE_DIR = "microservice/demo"
 
-        PROJECT_NAME = "platform-engineer-eks-demo" 
-
+        PROJECT_NAME     = "platform-engineer-eks-demo"
         ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
     }
 
@@ -33,50 +31,28 @@ pipeline {
 
         stage('Build Spring Boot App JAR') {
             steps {
-                script {
+                dir("${MICROSERVICE_DIR}") {
                     echo "Building Spring Boot application JAR with Maven..."
-                    dir("${MICROSERVICE_DIR}") {
-                        sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
-                    }
+                    sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
                 }
             }
         }
 
-        stage('Build Docker Image') {
-            steps {
-                script {
-                    echo "Building Docker image for tag: ${IMAGE_TAG}"
-                    dir("${MICROSERVICE_DIR}") {
-                        sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
-                    }
-                }
-            }
-        }
-
-        stage('Vulnerability Scan with Trivy') {
-            steps {
-                script {
-                    echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
-                    sh """
-                        chmod +x ./jenkins/scripts/trivy_scan.sh
-                        ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
-                    """
-                }
-            }
-        }
-
-        stage('Push Docker Image to Docker Hub') {
+        stage('Build Docker Image & Push') {
             steps {
                 script {
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-                        def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
-                        def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+                        def DOCKER_IMAGE = "${DOCKER_USERNAME}/${APP_NAME}:${IMAGE_TAG}"
+                        env.DOCKER_IMAGE = DOCKER_IMAGE // save to env for later
 
-                        echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+                        echo "Building Docker image: ${DOCKER_IMAGE}"
+                        dir("${MICROSERVICE_DIR}") {
+                            sh "docker build -t ${DOCKER_IMAGE} ."
+                        }
+
+                        echo "Pushing Docker image to Docker Hub..."
                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
-                        
-                        sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
-                        sh "docker push ${fullImageTag}"
+                        sh "docker push ${DOCKER_IMAGE}"
                     }
                 }
             }
@@ -87,67 +63,47 @@ pipeline {
                 script {
                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
-                    echo "Retrieving DB credentials from AWS Secrets Manager and preparing for Kubernetes Secret..."
-                    
                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
-
-                    echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
-                    sh "echo '${secretJsonString}' | od -c"
-                    echo "--- END RAW SECRET JSON STRING ---"
 
                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
                     def dbPassword = sh(script: "printf %s '${secretJsonString}' | jq -r '.password'", returnStdout: true).trim()
                     def dbHost     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
                     def dbPort     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port | tostring'", returnStdout: true).trim()
                     def dbName     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
+                    def dbJdbcUrl  = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
 
-                    def dbUsernameBase64 = sh(script: "printf %s '${dbUsername}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
-                    def dbPasswordBase64 = sh(script: "printf %s '${dbPassword}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
-                    def dbHostBase64     = sh(script: "printf %s '${dbHost}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
-                    def dbPortBase64     = sh(script: "printf %s '${dbPort}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
-                    def dbNameBase64     = sh(script: "printf %s '${dbName}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
-                    
-                    def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
-                    def dbUrlBase64 = sh(script: "printf %s '${dbJdbcUrl}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+                    def encode = { val -> sh(script: "printf %s '${val}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim() }
 
-                    echo "--- BASE64 ENCODED VALUES (with od -c) ---"
-                    sh "printf %s 'dbUsernameBase64: ${dbUsernameBase64}' | od -c"
-                    sh "printf %s 'dbPasswordBase64: ${dbPasswordBase64}' | od -c"
-                    sh "printf %s 'dbHostBase64: ${dbHostBase64}' | od -c"
-                    sh "printf %s 'dbPortBase64: ${dbPortBase64}' | od -c"
-                    sh "printf %s 'dbNameBase64: ${dbNameBase64}' | od -c"
-                    sh "printf %s 'dbUrlBase64: ${dbUrlBase64}' | od -c"
-                    echo "--- END BASE64 ENCODED VALUES ---"
+                    def secretMap = [
+                        db_url     : encode(dbJdbcUrl),
+                        db_username: encode(dbUsername),
+                        db_password: encode(dbPassword),
+                        db_host    : encode(dbHost),
+                        db_port    : encode(dbPort),
+                        db_name    : encode(dbName)
+                    ]
 
-                    echo "Preparing Kubernetes Secret YAML..."
-                    // CRITICAL FIX: Corrected sed patterns for escaping and removed premature string closures.
-                    // Use single quotes for the sed script string to avoid Groovy interpolation,
-                    // then properly escape the '$' for sed itself.
-                    sh """
-                        cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
-                        
-                        sed -i 's|\\\${DB_URL_BASE64}|${dbUrlBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                        sed -i 's|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                        sed -i 's|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                        sed -i 's|\\\${DB_HOST_BASE64}|${dbHostBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                        sed -i 's|\\\${DB_PORT_BASE64}|${dbPortBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                        sed -i 's|\\\${DB_NAME_BASE64}|${dbNameBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                    """
+                    echo "Generating Kubernetes Secret YAML..."
+                    sh "cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml"
+                    secretMap.each { key, value ->
+                        sh "sed -i 's|\\\${${key.toUpperCase()}_BASE64}|${value}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    }
 
-                    echo "Generated secret.yaml content:"
-                    sh "cat ${KUBERNETES_DIR}/secret.yaml"
-
-                    echo "Applying Kubernetes manifests to EKS..."
+                    echo "Preparing deployment manifest..."
                     dir("${KUBERNETES_DIR}") {
                         sh "cp deployment.yaml deployment.generated.yaml"
-                        sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
-                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.DOCKER_USERNAME}/${APP_NAME}:${IMAGE_TAG}|g' deployment.generated.yaml"
+                        sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKER_IMAGE.split('/')[0]}|g' deployment.generated.yaml"
+                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.DOCKER_IMAGE}|g' deployment.generated.yaml"
 
+                        echo "Applying Kubernetes manifests..."
+                        sh "cp aws-load-balancer-controller-service-account.yaml aws-load-balancer-controller-service-account.generated.yaml"
+                        sh "sed -i 's|<ALB_CONTROLLER_POLICY_ARN>|${ALB_CONTROLLER_POLICY_ARN}|g' aws-load-balancer-controller-service-account.generated.yaml"
+
+                        sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml"
                         sh "kubectl apply -f secret.yaml"
                         sh "kubectl apply -f deployment.generated.yaml"
                         sh "kubectl apply -f service.yaml"
                         sh "kubectl apply -f ingress.yaml"
-                        sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
                     }
                 }
             }
@@ -178,24 +134,22 @@ pipeline {
                     }
 
                     echo "Application health check at: http://${ingress_host}/api/products/health"
-
                     for (int i = 0; i < 5; i++) {
                         try {
                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
                             echo "Application health check passed."
                             break
                         } catch (Exception e) {
-                            echo "Application health check failed, retrying... (${i + 1}/5)"
+                            echo "Health check failed, retrying (${i + 1}/5)..."
                             sleep 5
-                            if (i == 4) {
-                                error("Application health check failed after multiple retries.")
-                            }
+                            if (i == 4) error("Application health check failed after multiple retries.")
                         }
                     }
                 }
             }
         }
     }
+
     post {
         always {
             cleanWs()
@@ -209,6 +163,223 @@ pipeline {
         }
     }
 }
+
+
+
+
+
+
+// // jenkins/Jenkinsfile
+// pipeline {
+//     agent any
+
+//     tools {
+//         maven 'Maven3.9.10' 
+//     }
+
+//     environment {
+//         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+//         AWS_REGION       = "${params.AWS_REGION}"
+        
+//         APP_NAME         = "spring-boot-demo-app"
+//         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
+        
+//         KUBERNETES_DIR   = "kubernetes"
+//         MICROSERVICE_DIR = "microservice/demo"
+
+//         PROJECT_NAME = "platform-engineer-eks-demo" 
+
+//         ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
+//     }
+
+//     stages {
+//         stage('Checkout Source Code') {
+//             steps {
+//                 script {
+//                     echo "Checking out SCM from Git repository..."
+//                     checkout scm
+//                 }
+//             }
+//         }
+
+//         stage('Build Spring Boot App JAR') {
+//             steps {
+//                 script {
+//                     echo "Building Spring Boot application JAR with Maven..."
+//                     dir("${MICROSERVICE_DIR}") {
+//                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Build Docker Image') {
+//             steps {
+//                 script {
+//                     echo "Building Docker image for tag: ${IMAGE_TAG}"
+//                     dir("${MICROSERVICE_DIR}") {
+//                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Vulnerability Scan with Trivy') {
+//             steps {
+//                 script {
+//                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
+//                     sh """
+//                         chmod +x ./jenkins/scripts/trivy_scan.sh
+//                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
+//                     """
+//                 }
+//             }
+//         }
+
+//         stage('Push Docker Image to Docker Hub') {
+//             steps {
+//                 script {
+//                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+//                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
+//                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+
+//                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+//                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+                        
+//                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
+//                         sh "docker push ${fullImageTag}"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Deploy to EKS') {
+//             steps {
+//                 script {
+//                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
+
+//                     echo "Retrieving DB credentials from AWS Secrets Manager and preparing for Kubernetes Secret..."
+                    
+//                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+
+//                     echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
+//                     sh "echo '${secretJsonString}' | od -c"
+//                     echo "--- END RAW SECRET JSON STRING ---"
+
+//                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
+//                     def dbPassword = sh(script: "printf %s '${secretJsonString}' | jq -r '.password'", returnStdout: true).trim()
+//                     def dbHost     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
+//                     def dbPort     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port | tostring'", returnStdout: true).trim()
+//                     def dbName     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
+
+//                     def dbUsernameBase64 = sh(script: "printf %s '${dbUsername}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbPasswordBase64 = sh(script: "printf %s '${dbPassword}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbHostBase64     = sh(script: "printf %s '${dbHost}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbPortBase64     = sh(script: "printf %s '${dbPort}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbNameBase64     = sh(script: "printf %s '${dbName}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+                    
+//                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
+//                     def dbUrlBase64 = sh(script: "printf %s '${dbJdbcUrl}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+
+//                     echo "--- BASE64 ENCODED VALUES (with od -c) ---"
+//                     sh "printf %s 'dbUsernameBase64: ${dbUsernameBase64}' | od -c"
+//                     sh "printf %s 'dbPasswordBase64: ${dbPasswordBase64}' | od -c"
+//                     sh "printf %s 'dbHostBase64: ${dbHostBase64}' | od -c"
+//                     sh "printf %s 'dbPortBase64: ${dbPortBase64}' | od -c"
+//                     sh "printf %s 'dbNameBase64: ${dbNameBase64}' | od -c"
+//                     sh "printf %s 'dbUrlBase64: ${dbUrlBase64}' | od -c"
+//                     echo "--- END BASE64 ENCODED VALUES ---"
+
+//                     echo "Preparing Kubernetes Secret YAML..."
+//                     // CRITICAL FIX: Corrected sed patterns for escaping and removed premature string closures.
+//                     // Use single quotes for the sed script string to avoid Groovy interpolation,
+//                     // then properly escape the '$' for sed itself.
+//                     sh """
+//                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
+                        
+//                         sed -i 's|\\\${DB_URL_BASE64}|${dbUrlBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i 's|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i 's|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i 's|\\\${DB_HOST_BASE64}|${dbHostBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i 's|\\\${DB_PORT_BASE64}|${dbPortBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i 's|\\\${DB_NAME_BASE64}|${dbNameBase64}|g' ${KUBERNETES_DIR}/secret.yaml
+//                     """
+
+//                     echo "Generated secret.yaml content:"
+//                     sh "cat ${KUBERNETES_DIR}/secret.yaml"
+
+//                     echo "Applying Kubernetes manifests to EKS..."
+//                     dir("${KUBERNETES_DIR}") {
+//                         sh "cp deployment.yaml deployment.generated.yaml"
+//                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
+//                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.DOCKER_USERNAME}/${APP_NAME}:${IMAGE_TAG}|g' deployment.generated.yaml"
+
+//                         sh "kubectl apply -f secret.yaml"
+//                         sh "kubectl apply -f deployment.generated.yaml"
+//                         sh "kubectl apply -f service.yaml"
+//                         sh "kubectl apply -f ingress.yaml"
+//                         sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Verify Deployment') {
+//             steps {
+//                 script {
+//                     echo "Verifying deployment readiness..."
+//                     sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
+
+//                     def ingress_host = ''
+//                     for (int i = 0; i < 10; i++) {
+//                         try {
+//                             ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+//                             if (ingress_host) {
+//                                 echo "ALB DNS name available: ${ingress_host}"
+//                                 break
+//                             }
+//                         } catch (Exception e) {
+//                             echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
+//                             sleep 10
+//                         }
+//                     }
+
+//                     if (!ingress_host) {
+//                         error("ALB DNS name did not become available within timeout.")
+//                     }
+
+//                     echo "Application health check at: http://${ingress_host}/api/products/health"
+
+//                     for (int i = 0; i < 5; i++) {
+//                         try {
+//                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
+//                             echo "Application health check passed."
+//                             break
+//                         } catch (Exception e) {
+//                             echo "Application health check failed, retrying... (${i + 1}/5)"
+//                             sleep 5
+//                             if (i == 4) {
+//                                 error("Application health check failed after multiple retries.")
+//                             }
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     post {
+//         always {
+//             cleanWs()
+//             echo "Post-build actions always run."
+//         }
+//         failure {
+//             echo "Pipeline failed! Check logs for details."
+//         }
+//         success {
+//             echo "Pipeline succeeded! Application deployed and verified."
+//         }
+//     }
+// }
 
 
 
