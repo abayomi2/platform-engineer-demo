@@ -93,7 +93,7 @@ pipeline {
 
                     // --- DEBUGGING OUTPUT (CRITICAL FOR DIAGNOSIS) ---
                     echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
-                    sh "echo '${secretJsonString}' | od -c" // od -c shows all characters, including newlines, spaces, etc.
+                    sh "echo '${secretJsonString}' | od -c"
                     echo "--- END RAW SECRET JSON STRING ---"
 
                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
@@ -119,15 +119,15 @@ pipeline {
                     sh "printf %s 'dbNameBase64: ${dbNameBase64}' | od -c"
                     sh "printf %s 'dbUrlBase64: ${dbUrlBase64}' | od -c"
                     echo "--- END BASE64 ENCODED VALUES ---"
-                    // --- END DEBUGGING OUTPUT ---
 
                     echo "Preparing Kubernetes Secret YAML..."
                     sh """
                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-                        sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        # CRITICAL FIX: Correct sed patterns to match ${VAR_NAME}
+                        sed -i "s|\\\${DB_URL_BASE64}|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
                         sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
                         sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
@@ -209,6 +209,7 @@ pipeline {
     }
 }
 
+
 //         stage('Deploy to EKS') {
 //             steps {
 //                 script {
@@ -218,37 +219,33 @@ pipeline {
                     
 //                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
 
-//                     // --- DEBUGGING OUTPUT ---
-//                     echo "--- RAW SECRET JSON STRING ---"
-//                     echo "${secretJsonString}"
+//                     // --- DEBUGGING OUTPUT (CRITICAL FOR DIAGNOSIS) ---
+//                     echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
+//                     sh "echo '${secretJsonString}' | od -c" // od -c shows all characters, including newlines, spaces, etc.
 //                     echo "--- END RAW SECRET JSON STRING ---"
-//                     // --- END DEBUGGING OUTPUT ---
 
-//                     // CRITICAL FIX: Use jq's @base64 filter directly for Base64 encoding.
-//                     // This is the most reliable way to get clean Base64 from jq.
-//                     def dbUsernameBase64 = sh(script: "printf %s '${secretJsonString}' | jq -r '.username | @base64'", returnStdout: true).trim()
-//                     def dbPasswordBase64 = sh(script: "printf %s '${secretJsonString}' | jq -r '.password | @base64'", returnStdout: true).trim()
-//                     def dbHostBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host | @base64'", returnStdout: true).trim()
-//                     def dbPortBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port | tostring | @base64'", returnStdout: true).trim()
-//                     def dbNameBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname | @base64'", returnStdout: true).trim()
+//                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
+//                     def dbPassword = sh(script: "printf %s '${secretJsonString}' | jq -r '.password'", returnStdout: true).trim()
+//                     def dbHost     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
+//                     def dbPort     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port | tostring'", returnStdout: true).trim()
+//                     def dbName     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
 
-//                     // Reconstruct dbUrl and then base64 encode it, ensuring no extra spaces or newlines
-//                     // Extract raw string values using jq, then concatenate in Groovy, then encode in shell.
-//                     def dbHost = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
-//                     def dbPort = sh(script: "printf %s '${secretJsonString}' | jq -r '.port'", returnStdout: true).trim() // Get as raw string
-//                     def dbName = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
+//                     def dbUsernameBase64 = sh(script: "printf %s '${dbUsername}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbPasswordBase64 = sh(script: "printf %s '${dbPassword}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbHostBase64     = sh(script: "printf %s '${dbHost}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbPortBase64     = sh(script: "printf %s '${dbPort}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
+//                     def dbNameBase64     = sh(script: "printf %s '${dbName}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
                     
 //                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
 //                     def dbUrlBase64 = sh(script: "printf %s '${dbJdbcUrl}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
 
-//                     // --- DEBUGGING OUTPUT ---
-//                     echo "--- BASE64 ENCODED VALUES ---"
-//                     echo "dbUsernameBase64: ${dbUsernameBase64}"
-//                     echo "dbPasswordBase64: ${dbPasswordBase64}"
-//                     echo "dbHostBase64: ${dbHostBase64}"
-//                     echo "dbPortBase64: ${dbPortBase64}"
-//                     echo "dbNameBase64: ${dbNameBase64}"
-//                     echo "dbUrlBase64: ${dbUrlBase64}"
+//                     echo "--- BASE64 ENCODED VALUES (with od -c) ---"
+//                     sh "printf %s 'dbUsernameBase64: ${dbUsernameBase64}' | od -c"
+//                     sh "printf %s 'dbPasswordBase64: ${dbPasswordBase64}' | od -c"
+//                     sh "printf %s 'dbHostBase64: ${dbHostBase64}' | od -c"
+//                     sh "printf %s 'dbPortBase64: ${dbPortBase64}' | od -c"
+//                     sh "printf %s 'dbNameBase64: ${dbNameBase64}' | od -c"
+//                     sh "printf %s 'dbUrlBase64: ${dbUrlBase64}' | od -c"
 //                     echo "--- END BASE64 ENCODED VALUES ---"
 //                     // --- END DEBUGGING OUTPUT ---
 
@@ -339,3 +336,4 @@ pipeline {
 //         }
 //     }
 // }
+
