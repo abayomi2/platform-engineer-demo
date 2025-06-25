@@ -135,15 +135,35 @@ pipeline {
 
                     echo "Applying Kubernetes manifests to EKS..."
                     dir("${KUBERNETES_DIR}") {
+                        // All file preparation for generated YAMLs should happen here if they are consumed here.
                         sh "cp deployment.yaml deployment.generated.yaml"
                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml"
 
+                        // Prepare and apply aws-load-balancer-controller-service-account.yaml
+                        sh """
+                            cp aws-load-balancer-controller-service-account.yaml aws-load-balancer-controller-service-account.generated.yaml
+                            sed -i "s|<ALB_CONTROLLER_POLICY_ARN>|${ALB_CONTROLLER_POLICY_ARN}|g" aws-load-balancer-controller-service-account.generated.yaml
+                        """
+                        // CRITICAL FIX: Move this kubectl apply INSIDE this 'dir' block
+                        sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
+                        // ... (other kubectl apply commands) ...
                         sh "kubectl apply -f secret.yaml"
-                        sh "kubectl apply -f deployment.generated.yaml"
+                        sh "kubectl apply -f deployment.generated.yaml" 
                         sh "kubectl apply -f service.yaml"
                         sh "kubectl apply -f ingress.yaml"
-                        sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
+
+                    // echo "Applying Kubernetes manifests to EKS..."
+                    // dir("${KUBERNETES_DIR}") {
+                    //     sh "cp deployment.yaml deployment.generated.yaml"
+                    //     sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
+                    //     sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml"
+
+                    //     sh "kubectl apply -f secret.yaml"
+                    //     sh "kubectl apply -f deployment.generated.yaml"
+                    //     sh "kubectl apply -f service.yaml"
+                    //     sh "kubectl apply -f ingress.yaml"
+                    //     sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
                     }
                 }
             }
