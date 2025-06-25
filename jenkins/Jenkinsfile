@@ -108,7 +108,7 @@ pipeline {
                     // Reconstruct dbUrl and then base64 encode it, ensuring no extra spaces or newlines
                     // Extract raw string values using jq, then concatenate in Groovy, then encode in shell.
                     def dbHost = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
-                    def dbPort = sh(script: "printf %s '${secretJsonString}' | jq -r '.port'", returnStdout: true).trim() # Get as raw string
+                    def dbPort = sh(script: "printf %s '${secretJsonString}' | jq -r '.port'", returnStdout: true).trim() // Get as raw string
                     def dbName = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
                     
                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
