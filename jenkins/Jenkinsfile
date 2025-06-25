@@ -91,7 +91,6 @@ pipeline {
                     
                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
 
-                    // --- DEBUGGING OUTPUT (CRITICAL FOR DIAGNOSIS) ---
                     echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
                     sh "echo '${secretJsonString}' | od -c"
                     echo "--- END RAW SECRET JSON STRING ---"
@@ -121,20 +120,18 @@ pipeline {
                     echo "--- END BASE64 ENCODED VALUES ---"
 
                     echo "Preparing Kubernetes Secret YAML..."
-                    sh """
-                        cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
-                        
-                        # CRITICAL FIX: Correct sed patterns to match ${VAR_NAME}
-                        sed -i "s|\\\${DB_URL_BASE64}|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                    // CRITICAL FIX: Use individual sh commands for sed to avoid multi-line string interpolation issues
+                    sh "cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml"
+                    
+                    sh "sed -i 's|\\\${DB_URL_BASE64}|${dbUrlBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    sh "sed -i 's|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    sh "sed -i 's|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    sh "sed -i 's|\\\${DB_HOST_BASE64}|${dbHostBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    sh "sed -i 's|\\\${DB_PORT_BASE64}|${dbPortBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
+                    sh "sed -i 's|\\\${DB_NAME_BASE64}|${dbNameBase64}|g' ${KUBERNETES_DIR}/secret.yaml"
 
-                        echo "Generated secret.yaml content:"
-                        cat ${KUBERNETES_DIR}/secret.yaml
-                    """
+                    echo "Generated secret.yaml content:"
+                    sh "cat ${KUBERNETES_DIR}/secret.yaml"
 
                     echo "Applying Kubernetes manifests to EKS..."
                     dir("${KUBERNETES_DIR}") {
@@ -210,6 +207,92 @@ pipeline {
 }
 
 
+
+
+// // jenkins/Jenkinsfile
+// pipeline {
+//     agent any
+
+//     tools {
+//         maven 'Maven3.9.10' 
+//     }
+
+//     environment {
+//         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+//         AWS_REGION       = "${params.AWS_REGION}"
+        
+//         APP_NAME         = "spring-boot-demo-app"
+//         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
+        
+//         KUBERNETES_DIR   = "kubernetes"
+//         MICROSERVICE_DIR = "microservice/demo"
+
+//         PROJECT_NAME = "platform-engineer-eks-demo" 
+
+//         ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
+//     }
+
+//     stages {
+//         stage('Checkout Source Code') {
+//             steps {
+//                 script {
+//                     echo "Checking out SCM from Git repository..."
+//                     checkout scm
+//                 }
+//             }
+//         }
+
+//         stage('Build Spring Boot App JAR') {
+//             steps {
+//                 script {
+//                     echo "Building Spring Boot application JAR with Maven..."
+//                     dir("${MICROSERVICE_DIR}") {
+//                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Build Docker Image') {
+//             steps {
+//                 script {
+//                     echo "Building Docker image for tag: ${IMAGE_TAG}"
+//                     dir("${MICROSERVICE_DIR}") {
+//                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+//                     }
+//                 }
+//             }
+//         }
+
+//         stage('Vulnerability Scan with Trivy') {
+//             steps {
+//                 script {
+//                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
+//                     sh """
+//                         chmod +x ./jenkins/scripts/trivy_scan.sh
+//                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
+//                     """
+//                 }
+//             }
+//         }
+
+//         stage('Push Docker Image to Docker Hub') {
+//             steps {
+//                 script {
+//                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+//                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
+//                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+
+//                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+//                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+                        
+//                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
+//                         sh "docker push ${fullImageTag}"
+//                     }
+//                 }
+//             }
+//         }
+
 //         stage('Deploy to EKS') {
 //             steps {
 //                 script {
@@ -221,7 +304,7 @@ pipeline {
 
 //                     // --- DEBUGGING OUTPUT (CRITICAL FOR DIAGNOSIS) ---
 //                     echo "--- RAW SECRET JSON STRING (visible and hidden chars) ---"
-//                     sh "echo '${secretJsonString}' | od -c" // od -c shows all characters, including newlines, spaces, etc.
+//                     sh "echo '${secretJsonString}' | od -c"
 //                     echo "--- END RAW SECRET JSON STRING ---"
 
 //                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
@@ -247,15 +330,15 @@ pipeline {
 //                     sh "printf %s 'dbNameBase64: ${dbNameBase64}' | od -c"
 //                     sh "printf %s 'dbUrlBase64: ${dbUrlBase64}' | od -c"
 //                     echo "--- END BASE64 ENCODED VALUES ---"
-//                     // --- END DEBUGGING OUTPUT ---
 
 //                     echo "Preparing Kubernetes Secret YAML..."
 //                     sh """
 //                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-//                         sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         # CRITICAL FIX: Correct sed patterns to match ${VAR_NAME}
+//                         sed -i "s|\\\${DB_URL_BASE64}|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_USERNAME_BASE64}|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_PASSWORD_BASE64}|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 //                         sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 //                         sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 //                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
