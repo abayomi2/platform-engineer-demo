@@ -97,24 +97,22 @@ pipeline {
                     echo "--- END RAW SECRET JSON STRING ---"
                     // --- END DEBUGGING OUTPUT ---
 
-                    def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
-                    def dbPassword = sh(script: "printf %s '${secretJsonString}' | jq -r '.password'", returnStdout: true).trim()
-                    def dbHost     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
-                    def dbPort     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port' | tostring", returnStdout: true).trim()
-                    def dbName     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
+                    // CRITICAL FIX: Use jq's @base64 filter directly for Base64 encoding.
+                    // This is the most reliable way to get clean Base64 from jq.
+                    def dbUsernameBase64 = sh(script: "printf %s '${secretJsonString}' | jq -r '.username | @base64'", returnStdout: true).trim()
+                    def dbPasswordBase64 = sh(script: "printf %s '${secretJsonString}' | jq -r '.password | @base64'", returnStdout: true).trim()
+                    def dbHostBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host | @base64'", returnStdout: true).trim()
+                    def dbPortBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port | tostring | @base64'", returnStdout: true).trim()
+                    def dbNameBase64     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname | @base64'", returnStdout: true).trim()
 
-                    // CRITICAL FIX: Use Groovy's built-in Base64 encoding for the components.
-                    // This bypasses shell pipes and potential encoding issues.
-                    // THIS REPLACES ALL THE 'sh "printf %s ... | base64 -w 0 | tr -d '\\n'"' lines
-                    def dbUsernameBase64 = dbUsername.bytes.encodeBase64().toString()
-                    def dbPasswordBase64 = dbPassword.bytes.encodeBase64().toString()
-                    def dbHostBase64     = dbHost.bytes.encodeBase64().toString()
-                    def dbPortBase64     = dbPort.bytes.encodeBase64().toString()
-                    def dbNameBase64     = dbName.bytes.encodeBase64().toString()
+                    // Reconstruct dbUrl and then base64 encode it, ensuring no extra spaces or newlines
+                    // Extract raw string values using jq, then concatenate in Groovy, then encode in shell.
+                    def dbHost = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
+                    def dbPort = sh(script: "printf %s '${secretJsonString}' | jq -r '.port'", returnStdout: true).trim() # Get as raw string
+                    def dbName = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
                     
                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
-                    def dbUrlBase64 = dbJdbcUrl.bytes.encodeBase64().toString()
-
+                    def dbUrlBase64 = sh(script: "printf %s '${dbJdbcUrl}' | base64 -w 0 | tr -d '\\n'", returnStdout: true).trim()
 
                     // --- DEBUGGING OUTPUT ---
                     echo "--- BASE64 ENCODED VALUES ---"
@@ -217,6 +215,7 @@ pipeline {
 
 
 
+
 // // jenkins/Jenkinsfile
 // pipeline {
 //     agent any
@@ -237,7 +236,6 @@ pipeline {
 
 //         PROJECT_NAME = "platform-engineer-eks-demo" 
 
-//         // NEW: Add ALB_CONTROLLER_POLICY_ARN to environment, sourced from Jenkins job parameter.
 //         ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
 //     }
 
@@ -288,17 +286,13 @@ pipeline {
 //         stage('Push Docker Image to Docker Hub') {
 //             steps {
 //                 script {
-//                     // Expose credentials as DOCKER_USERNAME and DOCKER_PASSWORD environment variables
 //                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-//                         // Now DOCKER_USERNAME is directly available as an environment variable
 //                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
 //                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
 
 //                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
 //                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
                         
-//                         // Retag the image if necessary, or push directly.
-//                         // If you built with generic name, retag before pushing.
 //                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
 //                         sh "docker push ${fullImageTag}"
 //                     }
@@ -308,41 +302,59 @@ pipeline {
 
 //         stage('Deploy to EKS') {
 //             steps {
-//                 script { // This outer script block is fine.
+//                 script {
 //                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
-//                     echo "Retrieving DB credentials from AWS Secrets Manager..."
-//                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
-//                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+//                     echo "Retrieving DB credentials from AWS Secrets Manager and preparing for Kubernetes Secret..."
                     
-//                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
-//                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
-//                     def secretValues = [:] // Use a map to hold the results
-//                     script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
-//                         def jsonSlurper = new groovy.json.JsonSlurper()
-//                         def secretData = jsonSlurper.parseText(dbSecretJson)
+//                     def secretJsonString = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
 
-//                         secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
-//                         secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
-//                         secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
-//                         secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
-//                         secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+//                     // --- DEBUGGING OUTPUT ---
+//                     echo "--- RAW SECRET JSON STRING ---"
+//                     echo "${secretJsonString}"
+//                     echo "--- END RAW SECRET JSON STRING ---"
+//                     // --- END DEBUGGING OUTPUT ---
 
-//                         def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
-//                         secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
-//                     } // <--- END INNER SCRIPT BLOCK
+//                     def dbUsername = sh(script: "printf %s '${secretJsonString}' | jq -r '.username'", returnStdout: true).trim()
+//                     def dbPassword = sh(script: "printf %s '${secretJsonString}' | jq -r '.password'", returnStdout: true).trim()
+//                     def dbHost     = sh(script: "printf %s '${secretJsonString}' | jq -r '.host'", returnStdout: true).trim()
+//                     def dbPort     = sh(script: "printf %s '${secretJsonString}' | jq -r '.port' | tostring", returnStdout: true).trim()
+//                     def dbName     = sh(script: "printf %s '${secretJsonString}' | jq -r '.dbname'", returnStdout: true).trim()
 
-//                     // Now, use the serialized 'secretValues' map for shell commands.
+//                     // CRITICAL FIX: Use Groovy's built-in Base64 encoding for the components.
+//                     // This bypasses shell pipes and potential encoding issues.
+//                     // THIS REPLACES ALL THE 'sh "printf %s ... | base64 -w 0 | tr -d '\\n'"' lines
+//                     def dbUsernameBase64 = dbUsername.bytes.encodeBase64().toString()
+//                     def dbPasswordBase64 = dbPassword.bytes.encodeBase64().toString()
+//                     def dbHostBase64     = dbHost.bytes.encodeBase64().toString()
+//                     def dbPortBase64     = dbPort.bytes.encodeBase64().toString()
+//                     def dbNameBase64     = dbName.bytes.encodeBase64().toString()
+                    
+//                     def dbJdbcUrl = "jdbc:postgresql://${dbHost}:${dbPort}/${dbName}"
+//                     def dbUrlBase64 = dbJdbcUrl.bytes.encodeBase64().toString()
+
+
+//                     // --- DEBUGGING OUTPUT ---
+//                     echo "--- BASE64 ENCODED VALUES ---"
+//                     echo "dbUsernameBase64: ${dbUsernameBase64}"
+//                     echo "dbPasswordBase64: ${dbPasswordBase64}"
+//                     echo "dbHostBase64: ${dbHostBase64}"
+//                     echo "dbPortBase64: ${dbPortBase64}"
+//                     echo "dbNameBase64: ${dbNameBase64}"
+//                     echo "dbUrlBase64: ${dbUrlBase64}"
+//                     echo "--- END BASE64 ENCODED VALUES ---"
+//                     // --- END DEBUGGING OUTPUT ---
+
 //                     echo "Preparing Kubernetes Secret YAML..."
 //                     sh """
 //                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-//                         sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+//                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 
 //                         echo "Generated secret.yaml content:"
 //                         cat ${KUBERNETES_DIR}/secret.yaml
@@ -350,26 +362,15 @@ pipeline {
 
 //                     echo "Applying Kubernetes manifests to EKS..."
 //                     dir("${KUBERNETES_DIR}") {
-//                         // The Docker image name in deployment.yaml needs to be updated with the specific tag.
-//                         // For a real production scenario, you would typically use `kubectl set image` or Helm.
-//                         // For this demo, let's inject it into the deployment.yaml copy.
 //                         sh "cp deployment.yaml deployment.generated.yaml"
 //                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
-//                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
+//                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml"
 
-//                         // Prepare and apply aws-load-balancer-controller-service-account.yaml
-//                         // Replace <ALB_CONTROLLER_POLICY_ARN> placeholder with the actual ARN from Jenkins job parameter.
-//                         sh """
-//                             cp aws-load-balancer-controller-service-account.yaml aws-load-balancer-controller-service-account.generated.yaml
-//                             sed -i "s|<ALB_CONTROLLER_POLICY_ARN>|${ALB_CONTROLLER_POLICY_ARN}|g" aws-load-balancer-controller-service-account.generated.yaml
-//                             # If <YOUR_AWS_ACCOUNT_ID> is also a placeholder in the YAML, inject it here too.
-//                             # e.g., sed -i "s|<YOUR_AWS_ACCOUNT_ID>|${params.AWS_ACCOUNT_ID}|g" aws-load-balancer-controller-service-account.generated.yaml
-//                         """
 //                         sh "kubectl apply -f secret.yaml"
-//                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
+//                         sh "kubectl apply -f deployment.generated.yaml"
 //                         sh "kubectl apply -f service.yaml"
 //                         sh "kubectl apply -f ingress.yaml"
-//                         sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" // Apply this generated ServiceAccount
+//                         sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" 
 //                     }
 //                 }
 //             }
@@ -420,7 +421,7 @@ pipeline {
 //     }
 //     post {
 //         always {
-//             cleanWs() // Should now work as agent any is at top level
+//             cleanWs()
 //             echo "Post-build actions always run."
 //         }
 //         failure {
@@ -434,208 +435,425 @@ pipeline {
 
 
 
+// // // jenkins/Jenkinsfile
+// // pipeline {
+// //     agent any
 
-// // jenkins/Jenkinsfile
-// pipeline {
-//     agent any
+// //     tools {
+// //         maven 'Maven3.9.10' 
+// //     }
 
-//     tools {
-//         maven 'Maven3.9.10' 
-//     }
-
-//     environment {
-//         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
-//         AWS_REGION       = "${params.AWS_REGION}"
+// //     environment {
+// //         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+// //         AWS_REGION       = "${params.AWS_REGION}"
         
-//         APP_NAME         = "spring-boot-demo-app"
-//         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
+// //         APP_NAME         = "spring-boot-demo-app"
+// //         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
         
-//         KUBERNETES_DIR   = "kubernetes"
-//         MICROSERVICE_DIR = "microservice/demo"
+// //         KUBERNETES_DIR   = "kubernetes"
+// //         MICROSERVICE_DIR = "microservice/demo"
 
-//         PROJECT_NAME = "platform-engineer-eks-demo" 
-//     }
+// //         PROJECT_NAME = "platform-engineer-eks-demo" 
 
-//     stages {
-//         stage('Checkout Source Code') {
-//             steps {
-//                 script {
-//                     echo "Checking out SCM from Git repository..."
-//                     checkout scm
-//                 }
-//             }
-//         }
+// //         // NEW: Add ALB_CONTROLLER_POLICY_ARN to environment, sourced from Jenkins job parameter.
+// //         ALB_CONTROLLER_POLICY_ARN = "${params.ALB_CONTROLLER_POLICY_ARN}"
+// //     }
 
-//         stage('Build Spring Boot App JAR') {
-//             steps {
-//                 script {
-//                     echo "Building Spring Boot application JAR with Maven..."
-//                     dir("${MICROSERVICE_DIR}") {
-//                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
-//                     }
-//                 }
-//             }
-//         }
+// //     stages {
+// //         stage('Checkout Source Code') {
+// //             steps {
+// //                 script {
+// //                     echo "Checking out SCM from Git repository..."
+// //                     checkout scm
+// //                 }
+// //             }
+// //         }
 
-//         stage('Build Docker Image') {
-//             steps {
-//                 script {
-//                     echo "Building Docker image for tag: ${IMAGE_TAG}"
-//                     dir("${MICROSERVICE_DIR}") {
-//                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
-//                     }
-//                 }
-//             }
-//         }
+// //         stage('Build Spring Boot App JAR') {
+// //             steps {
+// //                 script {
+// //                     echo "Building Spring Boot application JAR with Maven..."
+// //                     dir("${MICROSERVICE_DIR}") {
+// //                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+// //                     }
+// //                 }
+// //             }
+// //         }
 
-//         stage('Vulnerability Scan with Trivy') {
-//             steps {
-//                 script {
-//                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
-//                     sh """
-//                         chmod +x ./jenkins/scripts/trivy_scan.sh
-//                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
-//                     """
-//                 }
-//             }
-//         }
+// //         stage('Build Docker Image') {
+// //             steps {
+// //                 script {
+// //                     echo "Building Docker image for tag: ${IMAGE_TAG}"
+// //                     dir("${MICROSERVICE_DIR}") {
+// //                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+// //                     }
+// //                 }
+// //             }
+// //         }
 
-//         stage('Push Docker Image to Docker Hub') {
-//             steps {
-//                 script {
-//                     // Expose credentials as DOCKER_USERNAME and DOCKER_PASSWORD environment variables
-//                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-//                         // Now DOCKER_USERNAME is directly available as an environment variable
-//                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
-//                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+// //         stage('Vulnerability Scan with Trivy') {
+// //             steps {
+// //                 script {
+// //                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
+// //                     sh """
+// //                         chmod +x ./jenkins/scripts/trivy_scan.sh
+// //                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
+// //                     """
+// //                 }
+// //             }
+// //         }
 
-//                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
-//                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+// //         stage('Push Docker Image to Docker Hub') {
+// //             steps {
+// //                 script {
+// //                     // Expose credentials as DOCKER_USERNAME and DOCKER_PASSWORD environment variables
+// //                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+// //                         // Now DOCKER_USERNAME is directly available as an environment variable
+// //                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
+// //                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+
+// //                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+// //                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
                         
-//                         // Retag the image if necessary, or push directly.
-//                         // If you built with generic name, retag before pushing.
-//                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
-//                         sh "docker push ${fullImageTag}"
-//                     }
-//                 }
-//             }
-//         }
+// //                         // Retag the image if necessary, or push directly.
+// //                         // If you built with generic name, retag before pushing.
+// //                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
+// //                         sh "docker push ${fullImageTag}"
+// //                     }
+// //                 }
+// //             }
+// //         }
 
-//         stage('Deploy to EKS') {
-//             steps {
-//                 script { // This outer script block is fine.
-//                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
+// //         stage('Deploy to EKS') {
+// //             steps {
+// //                 script { // This outer script block is fine.
+// //                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
-//                     echo "Retrieving DB credentials from AWS Secrets Manager..."
-//                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
-//                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+// //                     echo "Retrieving DB credentials from AWS Secrets Manager..."
+// //                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
+// //                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
                     
-//                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
-//                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
-//                     def secretValues = [:] // Use a map to hold the results
-//                     script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
-//                         def jsonSlurper = new groovy.json.JsonSlurper()
-//                         def secretData = jsonSlurper.parseText(dbSecretJson)
+// //                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
+// //                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
+// //                     def secretValues = [:] // Use a map to hold the results
+// //                     script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
+// //                         def jsonSlurper = new groovy.json.JsonSlurper()
+// //                         def secretData = jsonSlurper.parseText(dbSecretJson)
 
-//                         secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
-//                         secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
-//                         secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
-//                         secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
-//                         secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+// //                         secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+// //                         secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+// //                         secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+// //                         secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
+// //                         secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
 
-//                         def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
-//                         secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
-//                     } // <--- END INNER SCRIPT BLOCK
+// //                         def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+// //                         secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+// //                     } // <--- END INNER SCRIPT BLOCK
 
-//                     // Now, use the serialized 'secretValues' map for shell commands.
-//                     echo "Preparing Kubernetes Secret YAML..."
-//                     // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
-//                     sh """
-//                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
+// //                     // Now, use the serialized 'secretValues' map for shell commands.
+// //                     echo "Preparing Kubernetes Secret YAML..."
+// //                     sh """
+// //                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-//                         sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-//                         sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
 
-//                         echo "Generated secret.yaml content:"
-//                         cat ${KUBERNETES_DIR}/secret.yaml
-//                     """
+// //                         echo "Generated secret.yaml content:"
+// //                         cat ${KUBERNETES_DIR}/secret.yaml
+// //                     """
 
-//                     echo "Applying Kubernetes manifests to EKS..."
-//                     dir("${KUBERNETES_DIR}") {
-//                         // The Docker image name in deployment.yaml needs to be updated with the specific tag.
-//                         // For a real production scenario, you would typically use `kubectl set image` or Helm.
-//                         // For this demo, let's inject it into the deployment.yaml copy.
-//                         sh "cp deployment.yaml deployment.generated.yaml"
-//                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
-//                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
+// //                     echo "Applying Kubernetes manifests to EKS..."
+// //                     dir("${KUBERNETES_DIR}") {
+// //                         // The Docker image name in deployment.yaml needs to be updated with the specific tag.
+// //                         // For a real production scenario, you would typically use `kubectl set image` or Helm.
+// //                         // For this demo, let's inject it into the deployment.yaml copy.
+// //                         sh "cp deployment.yaml deployment.generated.yaml"
+// //                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
+// //                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
 
-//                         sh "kubectl apply -f secret.yaml"
-//                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
-//                         sh "kubectl apply -f service.yaml"
-//                         sh "kubectl apply -f ingress.yaml"
-//                     }
-//                 }
-//             }
-//         }
+// //                         // Prepare and apply aws-load-balancer-controller-service-account.yaml
+// //                         // Replace <ALB_CONTROLLER_POLICY_ARN> placeholder with the actual ARN from Jenkins job parameter.
+// //                         sh """
+// //                             cp aws-load-balancer-controller-service-account.yaml aws-load-balancer-controller-service-account.generated.yaml
+// //                             sed -i "s|<ALB_CONTROLLER_POLICY_ARN>|${ALB_CONTROLLER_POLICY_ARN}|g" aws-load-balancer-controller-service-account.generated.yaml
+// //                             # If <YOUR_AWS_ACCOUNT_ID> is also a placeholder in the YAML, inject it here too.
+// //                             # e.g., sed -i "s|<YOUR_AWS_ACCOUNT_ID>|${params.AWS_ACCOUNT_ID}|g" aws-load-balancer-controller-service-account.generated.yaml
+// //                         """
+// //                         sh "kubectl apply -f secret.yaml"
+// //                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
+// //                         sh "kubectl apply -f service.yaml"
+// //                         sh "kubectl apply -f ingress.yaml"
+// //                         sh "kubectl apply -f aws-load-balancer-controller-service-account.generated.yaml" // Apply this generated ServiceAccount
+// //                     }
+// //                 }
+// //             }
+// //         }
 
-//         stage('Verify Deployment') {
-//             steps {
-//                 script {
-//                     echo "Verifying deployment readiness..."
-//                     sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
+// //         stage('Verify Deployment') {
+// //             steps {
+// //                 script {
+// //                     echo "Verifying deployment readiness..."
+// //                     sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
 
-//                     def ingress_host = ''
-//                     for (int i = 0; i < 10; i++) {
-//                         try {
-//                             ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
-//                             if (ingress_host) {
-//                                 echo "ALB DNS name available: ${ingress_host}"
-//                                 break
-//                             }
-//                         } catch (Exception e) {
-//                             echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
-//                             sleep 10
-//                         }
-//                     }
+// //                     def ingress_host = ''
+// //                     for (int i = 0; i < 10; i++) {
+// //                         try {
+// //                             ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+// //                             if (ingress_host) {
+// //                                 echo "ALB DNS name available: ${ingress_host}"
+// //                                 break
+// //                             }
+// //                         } catch (Exception e) {
+// //                             echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
+// //                             sleep 10
+// //                         }
+// //                     }
 
-//                     if (!ingress_host) {
-//                         error("ALB DNS name did not become available within timeout.")
-//                     }
+// //                     if (!ingress_host) {
+// //                         error("ALB DNS name did not become available within timeout.")
+// //                     }
 
-//                     echo "Application health check at: http://${ingress_host}/api/products/health"
+// //                     echo "Application health check at: http://${ingress_host}/api/products/health"
 
-//                     for (int i = 0; i < 5; i++) {
-//                         try {
-//                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
-//                             echo "Application health check passed."
-//                             break
-//                         } catch (Exception e) {
-//                             echo "Application health check failed, retrying... (${i + 1}/5)"
-//                             sleep 5
-//                             if (i == 4) {
-//                                 error("Application health check failed after multiple retries.")
-//                             }
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     post {
-//         always {
-//             cleanWs() // Should now work as agent any is at top level
-//             echo "Post-build actions always run."
-//         }
-//         failure {
-//             echo "Pipeline failed! Check logs for details."
-//         }
-//         success {
-//             echo "Pipeline succeeded! Application deployed and verified."
-//         }
-//     }
-// }
+// //                     for (int i = 0; i < 5; i++) {
+// //                         try {
+// //                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
+// //                             echo "Application health check passed."
+// //                             break
+// //                         } catch (Exception e) {
+// //                             echo "Application health check failed, retrying... (${i + 1}/5)"
+// //                             sleep 5
+// //                             if (i == 4) {
+// //                                 error("Application health check failed after multiple retries.")
+// //                             }
+// //                         }
+// //                     }
+// //                 }
+// //             }
+// //         }
+// //     }
+// //     post {
+// //         always {
+// //             cleanWs() // Should now work as agent any is at top level
+// //             echo "Post-build actions always run."
+// //         }
+// //         failure {
+// //             echo "Pipeline failed! Check logs for details."
+// //         }
+// //         success {
+// //             echo "Pipeline succeeded! Application deployed and verified."
+// //         }
+// //     }
+// // }
+
+
+
+
+// // // jenkins/Jenkinsfile
+// // pipeline {
+// //     agent any
+
+// //     tools {
+// //         maven 'Maven3.9.10' 
+// //     }
+
+// //     environment {
+// //         EKS_CLUSTER_NAME = "${params.EKS_CLUSTER_NAME}"
+// //         AWS_REGION       = "${params.AWS_REGION}"
+        
+// //         APP_NAME         = "spring-boot-demo-app"
+// //         IMAGE_TAG        = "${env.BUILD_NUMBER}" 
+        
+// //         KUBERNETES_DIR   = "kubernetes"
+// //         MICROSERVICE_DIR = "microservice/demo"
+
+// //         PROJECT_NAME = "platform-engineer-eks-demo" 
+// //     }
+
+// //     stages {
+// //         stage('Checkout Source Code') {
+// //             steps {
+// //                 script {
+// //                     echo "Checking out SCM from Git repository..."
+// //                     checkout scm
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Build Spring Boot App JAR') {
+// //             steps {
+// //                 script {
+// //                     echo "Building Spring Boot application JAR with Maven..."
+// //                     dir("${MICROSERVICE_DIR}") {
+// //                         sh "mvn clean package -Dspring.profiles.active=local -DskipTests"
+// //                     }
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Build Docker Image') {
+// //             steps {
+// //                 script {
+// //                     echo "Building Docker image for tag: ${IMAGE_TAG}"
+// //                     dir("${MICROSERVICE_DIR}") {
+// //                         sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+// //                     }
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Vulnerability Scan with Trivy') {
+// //             steps {
+// //                 script {
+// //                     echo "Starting Trivy scan for Docker image: ${APP_NAME}:${IMAGE_TAG}..."
+// //                     sh """
+// //                         chmod +x ./jenkins/scripts/trivy_scan.sh
+// //                         ./jenkins/scripts/trivy_scan.sh ${APP_NAME}:${IMAGE_TAG}
+// //                     """
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Push Docker Image to Docker Hub') {
+// //             steps {
+// //                 script {
+// //                     // Expose credentials as DOCKER_USERNAME and DOCKER_PASSWORD environment variables
+// //                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+// //                         // Now DOCKER_USERNAME is directly available as an environment variable
+// //                         def appRepoUrlWithUsername = "${DOCKER_USERNAME}/${APP_NAME}"
+// //                         def fullImageTag = "${appRepoUrlWithUsername}:${IMAGE_TAG}"
+
+// //                         echo "Logging into Docker Hub and pushing image: ${fullImageTag}..."
+// //                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin"
+                        
+// //                         // Retag the image if necessary, or push directly.
+// //                         // If you built with generic name, retag before pushing.
+// //                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTag}"
+// //                         sh "docker push ${fullImageTag}"
+// //                     }
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Deploy to EKS') {
+// //             steps {
+// //                 script { // This outer script block is fine.
+// //                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
+
+// //                     echo "Retrieving DB credentials from AWS Secrets Manager..."
+// //                     // CRITICAL FIX: Use PROJECT_NAME for secret ID, not EKS_CLUSTER_NAME
+// //                     def dbSecretJson = sh(script: "aws secretsmanager get-secret-value --secret-id ${env.PROJECT_NAME}/db_credentials --query SecretString --output text", returnStdout: true).trim()
+                    
+// //                     // CRITICAL FIX: JsonSlurper and its parsed data are processed within this continuous Groovy script context.
+// //                     // This prevents NotSerializableException as the object is not held across serialization points (sh, sleep).
+// //                     def secretValues = [:] // Use a map to hold the results
+// //                     script { // <--- NEW INNER SCRIPT BLOCK for strict serialization
+// //                         def jsonSlurper = new groovy.json.JsonSlurper()
+// //                         def secretData = jsonSlurper.parseText(dbSecretJson)
+
+// //                         secretValues.dbUsernameBase64 = secretData.username.bytes.encodeBase64().toString()
+// //                         secretValues.dbPasswordBase64 = secretData.password.bytes.encodeBase64().toString()
+// //                         secretValues.dbHostBase64     = secretData.host.bytes.encodeBase64().toString()
+// //                         secretValues.dbPortBase64     = String.valueOf(secretData.port).bytes.encodeBase64().toString()
+// //                         secretValues.dbNameBase64     = secretData.dbname.bytes.encodeBase64().toString()
+
+// //                         def dbUrl = "jdbc:postgresql://${secretData.host}:${secretData.port}/${secretData.dbname}"
+// //                         secretValues.dbUrlBase64 = dbUrl.bytes.encodeBase64().toString()
+// //                     } // <--- END INNER SCRIPT BLOCK
+
+// //                     // Now, use the serialized 'secretValues' map for shell commands.
+// //                     echo "Preparing Kubernetes Secret YAML..."
+// //                     // These sh commands are fine, as the Groovy variables (e.g., dbUrlBase64) are now primitive types/Strings
+// //                     sh """
+// //                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
+                        
+// //                         sed -i "s|\\\$DB_URL_BASE64|${secretValues.dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\$DB_USERNAME_BASE64|${secretValues.dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\$DB_PASSWORD_BASE64|${secretValues.dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_HOST_BASE64}|${secretValues.dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_PORT_BASE64}|${secretValues.dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+// //                         sed -i "s|\\\${DB_NAME_BASE64}|${secretValues.dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+
+// //                         echo "Generated secret.yaml content:"
+// //                         cat ${KUBERNETES_DIR}/secret.yaml
+// //                     """
+
+// //                     echo "Applying Kubernetes manifests to EKS..."
+// //                     dir("${KUBERNETES_DIR}") {
+// //                         // The Docker image name in deployment.yaml needs to be updated with the specific tag.
+// //                         // For a real production scenario, you would typically use `kubectl set image` or Helm.
+// //                         // For this demo, let's inject it into the deployment.yaml copy.
+// //                         sh "cp deployment.yaml deployment.generated.yaml"
+// //                         sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${env.DOCKERHUB_USERNAME}|g' deployment.generated.yaml"
+// //                         sh "sed -i 's|image: ${APP_NAME}:latest|image: ${env.APP_REPO_URL}:${IMAGE_TAG}|g' deployment.generated.yaml" // Update image with exact tag
+
+// //                         sh "kubectl apply -f secret.yaml"
+// //                         sh "kubectl apply -f deployment.generated.yaml" // Use the modified deployment file
+// //                         sh "kubectl apply -f service.yaml"
+// //                         sh "kubectl apply -f ingress.yaml"
+// //                     }
+// //                 }
+// //             }
+// //         }
+
+// //         stage('Verify Deployment') {
+// //             steps {
+// //                 script {
+// //                     echo "Verifying deployment readiness..."
+// //                     sh "kubectl rollout status deployment/spring-boot-app-deployment --timeout=300s"
+
+// //                     def ingress_host = ''
+// //                     for (int i = 0; i < 10; i++) {
+// //                         try {
+// //                             ingress_host = sh(script: "kubectl get ingress spring-boot-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+// //                             if (ingress_host) {
+// //                                 echo "ALB DNS name available: ${ingress_host}"
+// //                                 break
+// //                             }
+// //                         } catch (Exception e) {
+// //                             echo "ALB DNS name not yet available, retrying... (${i + 1}/10)"
+// //                             sleep 10
+// //                         }
+// //                     }
+
+// //                     if (!ingress_host) {
+// //                         error("ALB DNS name did not become available within timeout.")
+// //                     }
+
+// //                     echo "Application health check at: http://${ingress_host}/api/products/health"
+
+// //                     for (int i = 0; i < 5; i++) {
+// //                         try {
+// //                             sh "curl -f --max-time 10 http://${ingress_host}/api/products/health"
+// //                             echo "Application health check passed."
+// //                             break
+// //                         } catch (Exception e) {
+// //                             echo "Application health check failed, retrying... (${i + 1}/5)"
+// //                             sleep 5
+// //                             if (i == 4) {
+// //                                 error("Application health check failed after multiple retries.")
+// //                             }
+// //                         }
+// //                     }
+// //                 }
+// //             }
+// //         }
+// //     }
+// //     post {
+// //         always {
+// //             cleanWs() // Should now work as agent any is at top level
+// //             echo "Post-build actions always run."
+// //         }
+// //         failure {
+// //             echo "Pipeline failed! Check logs for details."
+// //         }
+// //         success {
+// //             echo "Pipeline succeeded! Application deployed and verified."
+// //         }
+// //     }
+// // }
 
