@@ -132,7 +132,7 @@ pipeline {
                         sed -i 's|\\\${DB_HOST_BASE64}|${dbHostBase64}|g' ${KUBERNETES_DIR}/secret.yaml
                         sed -i 's|\\\${DB_PORT_BASE64}|${dbPortBase64}|g' ${KUBERNETES_DIR}/secret.yaml
                         sed -i 's|\\\${DB_NAME_BASE64}|${dbNameBase64}|g' ${KUBERNETES_DIR}/secret.yaml
-                    """ # Removed the extra " at the end of each sed line
+                    """
 
                     echo "Generated secret.yaml content:"
                     sh "cat ${KUBERNETES_DIR}/secret.yaml"
