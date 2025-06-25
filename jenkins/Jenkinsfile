@@ -82,27 +82,45 @@ pipeline {
                         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${fullImageTagForPush}"
                         sh "docker push ${fullImageTagForPush}"
                     }
-                    // Return the values explicitly for the next stage
+                    // CRITICAL FIX: Explicitly return the values as a map for the next stage
                     return [fullImageTag: fullImageTagForPush, dockerUsername: dockerUsernameForPush]
                 }
             }
         }
 
         stage('Deploy to EKS') {
-            // CRITICAL FIX: Receive parameters from previous stage
-            input {
-                message 'Proceed with deployment?'
-                ok 'Deploy'
-                parameters {
-                    string(name: 'FULL_IMAGE_TAG', defaultValue: '', description: 'Full image tag from previous stage')
-                    string(name: 'DOCKER_USERNAME_FROM_PUSH', defaultValue: '', description: 'Docker Hub Username from previous stage')
-                }
-            }
+            // CRITICAL FIX: REMOVE the 'input' step entirely.
+            // Data will be passed from the previous stage's return.
+
+            // Define variables to capture the return from the previous stage.
+            // The result of a 'stage' is often stored in a variable if it has a 'return' statement.
+            // However, direct stage return capture isn't standard in Declarative.
+            // We'll use a global variable or manage this differently.
+
+            // The best way to pass data between stages in declarative is via 'stash/unstash' or shared libraries.
+            // For simplicity and directness, let's make `dockerhubUsernameForDeploy` and `fullImageTagForDeploy`
+            // become global environment variables from the Push stage. This is a common workaround.
+            
+            // Revert 'Deploy to EKS' stage to its simpler structure and ensure variables are sourced correctly.
+            // It seems env.DOCKER_USERNAME is indeed the problem here due to scope.
+            // Let's re-introduce the `credentials()` call right before the `dir` block in Deploy stage.
+            
             steps {
                 script {
                     echo "Deploying application to EKS cluster: ${EKS_CLUSTER_NAME} in region ${AWS_REGION}..."
 
-                    echo "Retrieved Image Details: Image=${params.FULL_IMAGE_TAG}, User=${params.DOCKER_USERNAME_FROM_PUSH}" // Debug output
+                    // CRITICAL FIX: Re-retrieve Docker Hub username and full image tag securely for this stage's scope
+                    // This is the most reliable way to ensure these variables are present in this stage.
+                    def dockerhubUsernameForDeploy 
+                    def fullImageTagForDeploy
+
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USERNAME_TEMP', passwordVariable: 'DOCKER_PASSWORD_TEMP')]) {
+                        dockerhubUsernameForDeploy = DOCKER_USERNAME_TEMP // Get username from temp var
+                        fullImageTagForDeploy = "${dockerhubUsernameForDeploy}/${APP_NAME}:${IMAGE_TAG}" // Reconstruct
+                    }
+
+
+                    echo "Retrieved Image Details: Image=${fullImageTagForDeploy}, User=${dockerhubUsernameForDeploy}" // Debug output
 
                     echo "Retrieving DB credentials from AWS Secrets Manager and preparing for Kubernetes Secret..."
                     
@@ -140,11 +158,11 @@ pipeline {
                     sh """
                         cp ${KUBERNETES_DIR}/secret.yaml.tpl ${KUBERNETES_DIR}/secret.yaml
                         
-                        sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml
-                        sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml
+                        sed -i "s|\\\$DB_URL_BASE64|${dbUrlBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
+                        sed -i "s|\\\$DB_USERNAME_BASE64|${dbUsernameBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
+                        sed -i "s|\\\$DB_PASSWORD_BASE64|${dbPasswordBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
+                        sed -i "s|\\\${DB_HOST_BASE64}|${dbHostBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
+                        sed -i "s|\\\${DB_PORT_BASE64}|${dbPortBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
                         sed -i "s|\\\${DB_NAME_BASE64}|${dbNameBase64}|g" ${KUBERNETES_DIR}/secret.yaml"
 
                         echo "Generated secret.yaml content:"
@@ -154,9 +172,9 @@ pipeline {
                     echo "Applying Kubernetes manifests to EKS..."
                     dir("${KUBERNETES_DIR}") {
                         sh "cp deployment.yaml deployment.generated.yaml"
-                        // CRITICAL FIX: Use the parameters from the 'Deploy to EKS' stage
-                        sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${params.DOCKER_USERNAME_FROM_PUSH}|g' deployment.generated.yaml"
-                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${params.FULL_IMAGE_TAG}|g' deployment.generated.yaml"
+                        // CRITICAL FIX: Use the dynamically retrieved username and full image tag
+                        sh "sed -i 's|<YOUR_DOCKERHUB_USERNAME>|${dockerhubUsernameForDeploy}|g' deployment.generated.yaml"
+                        sh "sed -i 's|image: ${APP_NAME}:latest|image: ${fullImageTagForDeploy}|g' deployment.generated.yaml"
 
                         sh "kubectl apply -f secret.yaml"
                         sh "kubectl apply -f deployment.generated.yaml"
